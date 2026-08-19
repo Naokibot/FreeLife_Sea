@@ -262,6 +262,10 @@ public final class MarineMobService {
             return;
         }
         Location current = mob.anchor.getLocation();
+        if (!MarineGravityPolicy.allowScriptedAquaticMotion(isWaterContact(current))) {
+            mob.anchor.setGravity(true);
+            return;
+        }
         Vector delta = target.toVector().subtract(current.toVector());
         double distance = delta.length();
         if (distance < 0.35) {
@@ -292,9 +296,13 @@ public final class MarineMobService {
         if (!isUsable(mob) || !mob.showControlled) {
             return;
         }
+        boolean inWater = isWaterContact(mob.anchor.getLocation());
+        if (!MarineGravityPolicy.allowScriptedAquaticMotion(inWater)) {
+            mob.anchor.setGravity(true);
+            return;
+        }
         Vector slowed = mob.anchor.getVelocity().multiply(0.28);
-        slowed.setY(isWaterContact(mob.anchor.getLocation())
-                ? MarineWaterPhysics.SWIM_LIFT_PER_TICK : slowed.getY());
+        slowed.setY(MarineWaterPhysics.SWIM_LIFT_PER_TICK);
         mob.anchor.setGravity(true);
         mob.anchor.setVelocity(slowed);
     }
@@ -357,9 +365,11 @@ public final class MarineMobService {
 
             mob.ageTicks++;
             mob.anchor.setRemainingAir(mob.anchor.getMaximumAir());
-            mob.anchor.setFallDistance(0.0F);
 
             boolean inWater = isWaterContact(mob.anchor.getLocation());
+            if (inWater) {
+                mob.anchor.setFallDistance(0.0F);
+            }
             handleWaterTransition(mob, inWater);
 
             if (mob.showControlled) {
@@ -482,6 +492,11 @@ public final class MarineMobService {
         mob.anchor.setGravity(true);
 
         if (!inWater) {
+            if (MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {
+                mob.cachedWaterDirection = null;
+                mob.anchor.setGravity(true);
+                return;
+            }
             returnToWater(mob, location);
             return;
         }
@@ -589,7 +604,10 @@ public final class MarineMobService {
 
         if (!inWater) {
             finishAutonomousJump(mob, false);
-            returnToWater(mob, location);
+            mob.anchor.setGravity(true);
+            if (!MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {
+                returnToWater(mob, location);
+            }
             return;
         }
 
@@ -769,6 +787,10 @@ public final class MarineMobService {
     }
 
     private void returnToWater(MarineMob mob, Location location) {
+        if (MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {
+            mob.anchor.setGravity(true);
+            return;
+        }
         if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {
             mob.cachedWaterDirection = findNearbyWaterDirection(location, 7);
         }
@@ -791,6 +813,9 @@ public final class MarineMobService {
     private void moveCrab(MarineMob mob, boolean inWater, Location foodTarget) {
         mob.anchor.setGravity(true);
         Location location = mob.anchor.getLocation();
+        if (MarineGravityPolicy.useNativeAirGravity(inWater, mob.anchor.isOnGround())) {
+            return;
+        }
 
         if (foodTarget != null) {
             Vector toward = foodTarget.toVector().subtract(location.toVector()).setY(0.0);

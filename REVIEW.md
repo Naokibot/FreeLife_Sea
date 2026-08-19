@@ -76,3 +76,8 @@ Existing show-schedule, shallow-water/gravity, pursuit, speed-level, hitbox, and
 CI can verify compilation against Spigot 1.21.1, deterministic activity-profile values, unit tests, JAR integrity, Java 21 class version 65, and packaging.
 
 CI cannot reproduce the user's exact Residence/CMILib JAR combination, prove that Residence stops logging errors after those third-party JARs are corrected, or judge the subjective activity level in a real Minecraft client. A staging-server E2E run remains required for those points.
+
+
+## 1.8.1 airborne-gravity hotfix
+
+The 1.8.0 controller called `setGravity(true)`, but the out-of-water recovery path still wrote a small fixed Y velocity every tick. That repeatedly replaced the velocity that vanilla gravity was trying to accumulate and could make an airborne marine mob appear to wait in mid-air or descend unnaturally slowly. Version 1.8.1 separates three states: water (scripted swim controller allowed), grounded land (return-to-water controller allowed), and unsupported air (no scripted vertical velocity; native gravity only). Show guide/hold commands are also prevented from creating unintended flight outside water. Autonomous breach launches retain only their initial launch impulse and then use native gravity in the airborne phase.
