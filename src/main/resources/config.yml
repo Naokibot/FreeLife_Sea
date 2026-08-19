@@ -1,0 +1,34 @@
+# FreeLifeMarineMobs 1.3.0
+# Configure one or more scheduled orca shows below.
+# A show only uses orcas that were already spawned with /marine spawn orca.
+# It never creates marine mobs automatically.
+
+shows:
+  orca-show:
+    enabled: false
+    time-zone: 'Asia/Tokyo'
+    times:
+      - '10:00'
+      - '13:00'
+      - '15:30'
+
+    # World and pool reference point used to derive the show formation.
+    # Set these coordinates to the approximate center of the pool.
+    world: 'world'
+    center:
+      x: 0.5
+      y: 63.0
+      z: 0.5
+
+    # Direction the show faces in Minecraft yaw degrees.
+    # 0 = south (+Z), 90 = west (-X), 180 = north (-Z), -90 = east (+X).
+    heading-yaw: 0.0
+
+    # Up to eight nearby orcas can participate.
+    orcas: 4
+    control-radius: 48.0
+    audience-radius: 64.0
+
+    music:
+      enabled: true
+      volume: 0.75
