@@ -38,7 +38,8 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
 
         MarineMobService.MarineMob mob = mobs.spawn(player, type);
         String rideHint = type.rideable()
-                ? " Right-click it to ride (" + mob.seatCount() + " seat" + (mob.seatCount() == 1 ? "" : "s") + ")."
+                ? " Right-click it to ride (" + mob.seatCount() + " seat" + (mob.seatCount() == 1 ? "" : "s")
+                    + "). The first rider uses normal mounted movement controls."
                 : " It moves on its own and is not rideable.";
         player.sendMessage("Spawned " + type.displayName() + " with " + (int) type.maxHealth() + " health." + rideHint);
         return true;

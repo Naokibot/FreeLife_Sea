@@ -19,17 +19,18 @@ class MarineMobTypeTest {
     }
 
     @Test
-    void orcaHasEightIndependentSeats() {
+    void orcaKeepsEightSeatsAndSharkOnePilotSeat() {
         assertEquals(8, MarineMobType.ORCA.seats().size());
         assertEquals(1, MarineMobType.SHARK.seats().size());
         assertTrue(MarineMobType.ORCA.rideable());
+        assertTrue(MarineMobType.SHARK.rideable());
         assertFalse(MarineMobType.CRAB.rideable());
     }
 
     @Test
-    void upgradedModelsMeetMinimumDetailFloor() {
-        assertTrue(MarineMobType.ORCA.parts().size() >= 28);
-        assertTrue(MarineMobType.SHARK.parts().size() >= 20);
+    void refinedModelsMeetHigherDetailFloor() {
+        assertTrue(MarineMobType.ORCA.parts().size() >= 48);
+        assertTrue(MarineMobType.SHARK.parts().size() >= 39);
         assertTrue(MarineMobType.CRAB.parts().size() >= 16);
     }
 

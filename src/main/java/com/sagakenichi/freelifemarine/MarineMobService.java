@@ -12,9 +12,12 @@ import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Horse;
 import org.bukkit.entity.Interaction;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Slime;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Transformation;
@@ -63,17 +66,7 @@ public final class MarineMobService {
             throw new IllegalStateException("Player world is unavailable");
         }
 
-        Slime anchor = world.spawn(spawn, Slime.class, slime -> {
-            slime.setSize(1);
-            slime.setAI(false);
-            slime.setInvisible(true);
-            slime.setSilent(true);
-            slime.setGravity(false);
-            slime.setCollidable(false);
-            slime.setPersistent(false);
-            slime.setRemoveWhenFarAway(false);
-        });
-
+        LivingEntity anchor = createAnchor(world, spawn, type);
         Interaction interaction = world.spawn(spawn, Interaction.class, hitbox -> {
             hitbox.setInteractionWidth(type.interactionWidth());
             hitbox.setInteractionHeight(type.interactionHeight());
@@ -82,21 +75,21 @@ public final class MarineMobService {
         });
 
         List<BlockDisplay> displays = createDisplays(world, spawn, type);
-        List<ArmorStand> seats = createSeats(world, spawn, type);
+        List<ArmorStand> passengerSeats = createPassengerSeats(world, spawn, type);
 
         MarineMob mob = new MarineMob(
                 type,
                 anchor,
                 interaction,
                 displays,
-                seats,
+                passengerSeats,
                 type.maxHealth(),
                 origin.getYaw(),
                 randomTicks(90, 180),
                 ThreadLocalRandom.current().nextBoolean() ? 1 : -1,
                 randomTicks(150, 250)
         );
-        mob.wasInWater = isWaterAt(spawn);
+        mob.wasInWater = isWaterContact(spawn);
 
         byAnchor.put(anchor.getUniqueId(), mob);
         byEntity.put(anchor.getUniqueId(), mob);
@@ -131,7 +124,12 @@ public final class MarineMobService {
             return true;
         }
 
-        for (ArmorStand seat : mob.seats) {
+        if (mob.anchor.getPassengers().isEmpty()) {
+            mob.anchor.addPassenger(player);
+            return true;
+        }
+
+        for (ArmorStand seat : mob.passengerSeats) {
             if (seat.isValid() && seat.getPassengers().isEmpty()) {
                 seat.addPassenger(player);
                 return true;
@@ -173,10 +171,13 @@ public final class MarineMobService {
             boolean inWater = isWaterContact(mob.anchor.getLocation());
             handleWaterTransition(mob, inWater);
 
-            Player pilot = firstRider(mob.seats);
+            Player pilot = nativePilot(mob.anchor);
+            if (mob.anchor instanceof Horse horse) {
+                horse.setAI(pilot != null);
+            }
             if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
                 if (pilot != null) {
-                    moveWithPilot(mob, pilot, inWater);
+                    moveWithNativeRider(mob, inWater);
                 } else {
                     moveAquaticAutonomously(mob, inWater);
                 }
@@ -192,25 +193,36 @@ public final class MarineMobService {
         }
     }
 
-    private void moveWithPilot(MarineMob mob, Player pilot, boolean inWater) {
-        Vector direction = pilot.getEyeLocation().getDirection();
-        if (direction.lengthSquared() < DIRECTION_EPSILON) {
-            return;
-        }
-        direction.normalize();
+    private void moveWithNativeRider(MarineMob mob, boolean inWater) {
+        mob.anchor.setGravity(true);
 
-        double speed = inWater ? mob.type.rideSpeed() : mob.type.rideSpeed() * 0.38;
-        if (inWater) {
-            direction.setY(clamp(direction.getY(), -0.28, 0.22));
-        } else {
-            direction.setY(isSolidBelow(mob.anchor.getLocation()) ? 0.08 : -0.08);
+        Vector velocity = mob.anchor.getVelocity();
+        double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
+        if (horizontalSpeed > mob.type.rideSpeed()) {
+            double factor = mob.type.rideSpeed() / horizontalSpeed;
+            velocity.setX(velocity.getX() * factor);
+            velocity.setZ(velocity.getZ() * factor);
+            mob.anchor.setVelocity(velocity);
+        } else if (inWater && horizontalSpeed > 0.025) {
+            double assisted = Math.min(mob.type.rideSpeed(), horizontalSpeed * 1.06 + 0.002);
+            double factor = assisted / horizontalSpeed;
+            velocity.setX(velocity.getX() * factor);
+            velocity.setZ(velocity.getZ() * factor);
+            mob.anchor.setVelocity(velocity);
         }
-        mob.anchor.setVelocity(direction.multiply(speed));
-        mob.anchor.setRotation(pilot.getLocation().getYaw(), inWater ? pilot.getLocation().getPitch() * 0.30F : 0.0F);
+
+        if (!inWater) {
+            Vector slowed = mob.anchor.getVelocity();
+            slowed.setX(slowed.getX() * 0.55);
+            slowed.setZ(slowed.getZ() * 0.55);
+            mob.anchor.setVelocity(slowed);
+        }
     }
 
     private void moveAquaticAutonomously(MarineMob mob, boolean inWater) {
         Location location = mob.anchor.getLocation();
+        mob.anchor.setGravity(!inWater);
+
         if (!inWater) {
             if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {
                 mob.cachedWaterDirection = findNearbyWaterDirection(location, 6);
@@ -222,11 +234,7 @@ public final class MarineMobService {
                 float yaw = turnTowards(location.getYaw(), targetYaw, 4.0F);
                 mob.anchor.setRotation(yaw, 0.0F);
                 Vector velocity = horizontal.multiply(mob.type.cruiseSpeed() * 0.48);
-                if (isSolidBelow(location) && mob.ageTicks % 12L == 0L) {
-                    velocity.setY(0.13);
-                } else {
-                    velocity.setY(-0.08);
-                }
+                velocity.setY(isSolidBelow(location) && mob.ageTicks % 12L == 0L ? 0.13 : -0.08);
                 mob.anchor.setVelocity(velocity);
             } else {
                 Vector velocity = mob.anchor.getVelocity().multiply(0.45);
@@ -265,6 +273,7 @@ public final class MarineMobService {
     }
 
     private void moveCrab(MarineMob mob, boolean inWater) {
+        mob.anchor.setGravity(true);
         Location location = mob.anchor.getLocation();
         mob.turnTicks--;
         if (mob.turnTicks <= 0) {
@@ -287,11 +296,7 @@ public final class MarineMobService {
 
         double speed = inWater ? mob.type.cruiseSpeed() * 0.72 : mob.type.cruiseSpeed();
         Vector velocity = side.normalize().multiply(speed);
-        if (inWater) {
-            velocity.setY(Math.sin(mob.ageTicks * 0.10) * 0.008);
-        } else {
-            velocity.setY(isSolidBelow(location) ? 0.0 : -0.11);
-        }
+        velocity.setY(inWater ? Math.sin(mob.ageTicks * 0.10) * 0.008 : (isSolidBelow(location) ? 0.0 : -0.11));
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, 0.0F);
     }
@@ -308,16 +313,17 @@ public final class MarineMobService {
         }
 
         int splashCount = switch (mob.type) {
-            case ORCA -> 64;
-            case SHARK -> 34;
+            case ORCA -> 72;
+            case SHARK -> 38;
             case CRAB -> 16;
         };
-        double spread = mob.type == MarineMobType.ORCA ? 1.7 : mob.type == MarineMobType.SHARK ? 0.9 : 0.45;
-        world.spawnParticle(Particle.SPLASH, location, splashCount, spread, 0.55, spread, 0.18);
+        double spread = mob.type == MarineMobType.ORCA ? 1.85 : mob.type == MarineMobType.SHARK ? 1.0 : 0.45;
+        world.spawnParticle(Particle.SPLASH, location, splashCount, spread, 0.60, spread, 0.18);
         if (inWater) {
             world.spawnParticle(Particle.BUBBLE, location, Math.max(6, splashCount / 3), spread * 0.7, 0.45, spread * 0.7, 0.08);
         }
-        world.playSound(location, Sound.ENTITY_GENERIC_SPLASH, mob.type == MarineMobType.ORCA ? 1.45F : 0.9F,
+        world.playSound(location, Sound.ENTITY_GENERIC_SPLASH,
+                mob.type == MarineMobType.ORCA ? 1.55F : 0.9F,
                 mob.type == MarineMobType.CRAB ? 1.35F : 0.85F);
     }
 
@@ -335,16 +341,16 @@ public final class MarineMobService {
         double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
         if (horizontalSpeed > 0.08 && isNearSurface(base) && mob.ageTicks % 5L == 0L) {
             Vector forward = forwardFromYaw(base.getYaw());
-            Location wake = base.clone().subtract(forward.multiply(mob.type == MarineMobType.ORCA ? 3.3 : 2.0));
-            int count = mob.type == MarineMobType.ORCA ? 12 : mob.type == MarineMobType.SHARK ? 6 : 3;
-            world.spawnParticle(Particle.SPLASH, wake, count, 0.55, 0.20, 0.55, 0.06);
+            Location wake = base.clone().subtract(forward.multiply(mob.type == MarineMobType.ORCA ? 3.8 : 2.2));
+            int count = mob.type == MarineMobType.ORCA ? 14 : mob.type == MarineMobType.SHARK ? 7 : 3;
+            world.spawnParticle(Particle.SPLASH, wake, count, 0.62, 0.20, 0.62, 0.06);
         }
 
         if (mob.type == MarineMobType.ORCA && isNearSurface(base) && mob.ageTicks >= mob.nextBreathTick) {
             Vector forward = forwardFromYaw(base.getYaw());
-            Location blowhole = base.clone().add(forward.multiply(2.0)).add(0.0, 2.0, 0.0);
-            world.spawnParticle(Particle.CLOUD, blowhole, 14, 0.25, 0.55, 0.25, 0.025);
-            world.spawnParticle(Particle.SPLASH, blowhole, 8, 0.28, 0.24, 0.28, 0.05);
+            Location blowhole = base.clone().add(forward.multiply(2.0)).add(0.0, 2.15, 0.0);
+            world.spawnParticle(Particle.CLOUD, blowhole, 16, 0.25, 0.60, 0.25, 0.025);
+            world.spawnParticle(Particle.SPLASH, blowhole, 9, 0.30, 0.25, 0.30, 0.05);
             mob.nextBreathTick = mob.ageTicks + randomTicks(150, 260);
         }
     }
@@ -355,12 +361,13 @@ public final class MarineMobService {
         mob.interaction.setRotation(base.getYaw(), 0.0F);
 
         List<MarineMobType.SeatOffset> offsets = mob.type.seats();
-        for (int index = 0; index < mob.seats.size(); index++) {
-            ArmorStand seat = mob.seats.get(index);
+        for (int index = 0; index < mob.passengerSeats.size(); index++) {
+            ArmorStand seat = mob.passengerSeats.get(index);
             if (!seat.isValid()) {
                 continue;
             }
-            Location target = relative(base, offsets.get(index).forward(), offsets.get(index).up(), offsets.get(index).right());
+            MarineMobType.SeatOffset offset = offsets.get(index + 1);
+            Location target = relative(base, offset.forward(), offset.up(), offset.right());
             if (seat.getPassengers().isEmpty()) {
                 seat.teleport(target);
                 seat.setVelocity(mob.anchor.getVelocity());
@@ -379,20 +386,25 @@ public final class MarineMobService {
     private void updateDisplays(MarineMob mob) {
         Location base = mob.anchor.getLocation();
         float yaw = base.getYaw();
-        float pitch = base.getPitch();
+        double verticalVelocity = mob.anchor.getVelocity().getY();
+        float pitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC
+                ? (float) clamp(-verticalVelocity * 38.0, -16.0, 16.0)
+                : 0.0F;
+        double horizontalSpeed = Math.hypot(mob.anchor.getVelocity().getX(), mob.anchor.getVelocity().getZ());
+        double motionScale = clamp(horizontalSpeed / Math.max(0.08, mob.type.cruiseSpeed()), 0.18, 1.35);
         List<MarineMobType.ModelPart> parts = mob.type.parts();
 
         for (int index = 0; index < parts.size(); index++) {
             MarineMobType.ModelPart part = parts.get(index);
             BlockDisplay display = mob.displays.get(index);
-            double wave = animationWave(mob.ageTicks, part);
+            double wave = animationWave(mob.ageTicks, part) * motionScale;
             double forward = part.forward();
             double up = part.up();
             double right = part.right();
 
             switch (part.animation()) {
-                case SHARK_TAIL -> right += wave * 0.24;
-                case ORCA_FLUKE -> up += wave * 0.16;
+                case SHARK_TAIL -> right += wave * 0.22;
+                case ORCA_FLUKE -> up += wave * 0.14;
                 case CRAB_LEG_A, CRAB_LEG_B -> up += Math.abs(wave) * 0.055;
                 case STATIC -> { }
             }
@@ -453,7 +465,7 @@ public final class MarineMobService {
                 entity.setInterpolationDelay(0);
                 entity.setInterpolationDuration(2);
                 entity.setTeleportDuration(2);
-                entity.setViewRange(2.0F);
+                entity.setViewRange(2.5F);
                 entity.setDisplayWidth(Math.max(1.0F, type.interactionWidth()));
                 entity.setDisplayHeight(Math.max(1.0F, type.interactionHeight()));
                 entity.setTransformation(transformation(part, 0.0));
@@ -463,9 +475,37 @@ public final class MarineMobService {
         return displays;
     }
 
-    private static List<ArmorStand> createSeats(World world, Location spawn, MarineMobType type) {
-        List<ArmorStand> seats = new ArrayList<>(type.seats().size());
-        for (MarineMobType.SeatOffset ignored : type.seats()) {
+    private static LivingEntity createAnchor(World world, Location spawn, MarineMobType type) {
+        if (type.rideable()) {
+            return world.spawn(spawn, Horse.class, horse -> {
+                horse.setTamed(true);
+                horse.setAdult();
+                horse.setDomestication(horse.getMaxDomestication());
+                horse.setInvisible(true);
+                horse.setSilent(true);
+                horse.setCollidable(false);
+                horse.setPersistent(false);
+                horse.setRemoveWhenFarAway(false);
+                horse.setJumpStrength(0.58);
+                horse.getInventory().setSaddle(new ItemStack(Material.SADDLE));
+            });
+        }
+
+        return world.spawn(spawn, Slime.class, slime -> {
+            slime.setSize(1);
+            slime.setAI(false);
+            slime.setInvisible(true);
+            slime.setSilent(true);
+            slime.setCollidable(false);
+            slime.setPersistent(false);
+            slime.setRemoveWhenFarAway(false);
+        });
+    }
+
+    private static List<ArmorStand> createPassengerSeats(World world, Location spawn, MarineMobType type) {
+        int extraSeatCount = Math.max(0, type.seats().size() - 1);
+        List<ArmorStand> seats = new ArrayList<>(extraSeatCount);
+        for (int index = 0; index < extraSeatCount; index++) {
             ArmorStand seat = world.spawn(spawn, ArmorStand.class, stand -> {
                 stand.setVisible(false);
                 stand.setSmall(true);
@@ -495,7 +535,7 @@ public final class MarineMobService {
                 display.remove();
             }
         }
-        for (ArmorStand seat : mob.seats) {
+        for (ArmorStand seat : mob.passengerSeats) {
             if (seat.isValid()) {
                 seat.eject();
                 seat.remove();
@@ -510,12 +550,10 @@ public final class MarineMobService {
         }
     }
 
-    private static Player firstRider(List<ArmorStand> seats) {
-        for (ArmorStand seat : seats) {
-            for (Entity passenger : seat.getPassengers()) {
-                if (passenger instanceof Player player) {
-                    return player;
-                }
+    private static Player nativePilot(LivingEntity anchor) {
+        for (Entity passenger : anchor.getPassengers()) {
+            if (passenger instanceof Player player) {
+                return player;
             }
         }
         return null;
@@ -611,10 +649,10 @@ public final class MarineMobService {
 
     public static final class MarineMob {
         private final MarineMobType type;
-        private final Slime anchor;
+        private final LivingEntity anchor;
         private final Interaction interaction;
         private final List<BlockDisplay> displays;
-        private final List<ArmorStand> seats;
+        private final List<ArmorStand> passengerSeats;
         private double health;
         private long ageTicks;
         private float targetYaw;
@@ -624,23 +662,15 @@ public final class MarineMobService {
         private boolean wasInWater;
         private Vector cachedWaterDirection;
 
-        private MarineMob(
-                MarineMobType type,
-                Slime anchor,
-                Interaction interaction,
-                List<BlockDisplay> displays,
-                List<ArmorStand> seats,
-                double health,
-                float targetYaw,
-                int turnTicks,
-                int sideDirection,
-                long nextBreathTick
-        ) {
+        private MarineMob(MarineMobType type, LivingEntity anchor, Interaction interaction,
+                          List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
+                          double health, float targetYaw, int turnTicks,
+                          int sideDirection, long nextBreathTick) {
             this.type = type;
             this.anchor = anchor;
             this.interaction = interaction;
             this.displays = List.copyOf(displays);
-            this.seats = List.copyOf(seats);
+            this.passengerSeats = List.copyOf(passengerSeats);
             this.health = health;
             this.targetYaw = targetYaw;
             this.turnTicks = turnTicks;
@@ -648,16 +678,8 @@ public final class MarineMobService {
             this.nextBreathTick = nextBreathTick;
         }
 
-        public MarineMobType type() {
-            return type;
-        }
-
-        public double health() {
-            return health;
-        }
-
-        public int seatCount() {
-            return seats.size();
-        }
+        public MarineMobType type() { return type; }
+        public double health() { return health; }
+        public int seatCount() { return type.seats().size(); }
     }
 }
