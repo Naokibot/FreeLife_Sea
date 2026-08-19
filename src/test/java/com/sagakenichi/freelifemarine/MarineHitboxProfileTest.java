@@ -20,9 +20,9 @@ class MarineHitboxProfileTest {
     }
 
     @Test
-    void largeAnimalsUseSegmentedBodyHitboxes() {
-        assertEquals(6, MarineHitboxProfile.forType(MarineMobType.ORCA).size());
-        assertEquals(5, MarineHitboxProfile.forType(MarineMobType.SHARK).size());
-        assertEquals(3, MarineHitboxProfile.forType(MarineMobType.CRAB).size());
+    void animalsUseDenseOverlappingBodyHitboxes() {
+        assertEquals(10, MarineHitboxProfile.forType(MarineMobType.ORCA).size());
+        assertEquals(8, MarineHitboxProfile.forType(MarineMobType.SHARK).size());
+        assertEquals(5, MarineHitboxProfile.forType(MarineMobType.CRAB).size());
     }
 }
