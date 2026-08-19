@@ -34,10 +34,11 @@ Target: Spigot 1.21.1 / Java 21
    - A ridden shark/orca remains under native mounted control.
    - Food attraction only takes over the ordinary autonomous path when no pilot/show controller is active.
 
-5. **Dropped-food behavior needs a bounded search.**
+5. **Dropped-food behavior needs a bounded and throttled search.**
    - Each species has its own attraction range.
-   - Nearby dropped entities are searched only inside that bounded cube and the cached target is refreshed every four ticks.
-   - This avoids a global world-item scan on every movement tick.
+   - Nearby dropped entities are searched only inside that bounded cube.
+   - Both a found target and a no-target result are cached for six ticks, so an empty area does not trigger a nearby-entity query every movement tick.
+   - Review also found that the first approach threshold could make a shark or crab slow down just outside its bite radius; the final approach threshold was reduced so dropped food can actually be reached and consumed.
 
 6. **Show configuration should survive restart.**
    - `set-center`, `set-facing`, schedule edits, and enable/disable write back to `config.yml` and reload the definitions.

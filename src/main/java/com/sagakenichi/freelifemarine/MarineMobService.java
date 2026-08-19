@@ -351,10 +351,10 @@ public final class MarineMobService {
     }
 
     private Location scanFoodTarget(MarineMob mob) {
-        if (mob.ageTicks < mob.nextFoodScanTick && mob.foodTarget != null) {
-            return mob.foodTarget.clone();
+        if (mob.ageTicks < mob.nextFoodScanTick) {
+            return mob.foodTarget == null ? null : mob.foodTarget.clone();
         }
-        mob.nextFoodScanTick = mob.ageTicks + 4L;
+        mob.nextFoodScanTick = mob.ageTicks + 6L;
         Location origin = mob.anchor.getLocation();
         World world = origin.getWorld();
         double range = mob.type.foodAttractionRange();
@@ -501,7 +501,7 @@ public final class MarineMobService {
     private void steerTowardFood(MarineMob mob, Location location, Location target) {
         Vector delta = target.toVector().subtract(location.toVector());
         double horizontalDistance = Math.hypot(delta.getX(), delta.getZ());
-        if (horizontalDistance < 1.8) {
+        if (horizontalDistance < 0.55) {
             Vector coast = mob.anchor.getVelocity().multiply(0.88);
             coast.setY(coast.getY() * 0.60);
             mob.anchor.setVelocity(coast);
