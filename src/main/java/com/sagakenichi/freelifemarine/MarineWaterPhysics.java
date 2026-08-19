@@ -12,6 +12,9 @@ final class MarineWaterPhysics {
     static final double SHALLOW_DIVE_VERTICAL = -0.020;
     static final double DEEP_DIVE_VERTICAL = -0.095;
     static final double CHARGE_VERTICAL = 0.180;
+    static final double SHALLOW_BOTTOM_RECOVERY = 0.105;
+    static final double SHALLOW_TOP_MAX_UP = 0.055;
+    static final double SHALLOW_TOP_MAX_DOWN = -0.018;
     static final int SHALLOW_DIVE_TICKS = 4;
     static final int SHALLOW_CHARGE_TICKS = 32;
     static final int DEEP_CHARGE_TICKS = 48;
@@ -46,5 +49,34 @@ final class MarineWaterPhysics {
 
     static double swimmingVertical(double intendedVertical) {
         return intendedVertical + SWIM_LIFT_PER_TICK;
+    }
+
+    /**
+     * Keeps the carrier inside the useful vertical band of a two-block-deep pool.
+     *
+     * At the lower water layer, a stronger upward correction prevents floor scraping.
+     * At the upper water layer, vertical intent is clamped so gravity-enabled swimming
+     * does not repeatedly bounce between the surface and the floor.
+     */
+    static double shallowHeightHold(double requestedVertical,
+                                    boolean aboveWater,
+                                    boolean currentWater,
+                                    boolean belowWater,
+                                    boolean twoBelowWater) {
+        if (!currentWater) {
+            return requestedVertical;
+        }
+
+        boolean lowerLayer = aboveWater && !belowWater;
+        if (lowerLayer) {
+            return Math.max(requestedVertical, SHALLOW_BOTTOM_RECOVERY);
+        }
+
+        boolean upperLayer = belowWater && !twoBelowWater;
+        if (upperLayer) {
+            return Math.max(SHALLOW_TOP_MAX_DOWN, Math.min(SHALLOW_TOP_MAX_UP, requestedVertical));
+        }
+
+        return requestedVertical;
     }
 }
