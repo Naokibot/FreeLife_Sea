@@ -16,23 +16,27 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Final per-tick motion pass for behavior that must win after the normal marine AI.
  *
- * <p>This is intentionally small: it fixes a live-server carrier-hover edge case and
- * applies the requested player-facing orca riding control without rewriting the
- * autonomous movement service.</p>
+ * <p>Airborne movement is integrated manually. This intentionally does not depend
+ * on the invisible Horse/Slime carrier accepting Bukkit velocity updates, because
+ * live servers have shown cases where the carrier keeps a non-zero velocity yet its
+ * position remains suspended. Water and grounded movement still use the normal AI.</p>
  */
 final class MarineFinalMotionController {
 
     private static final double DIRECTION_EPSILON = 1.0E-6;
+    private static final double SUPPORT_PROBE = 0.10;
 
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
-    private final Map<UUID, Double> lastAirborneY = new HashMap<>();
+    private final Map<UUID, AirState> airborne = new HashMap<>();
     private BukkitTask task;
 
     MarineFinalMotionController(JavaPlugin plugin, MarineMobService mobs) {
@@ -49,28 +53,31 @@ final class MarineFinalMotionController {
             task.cancel();
             task = null;
         }
-        lastAirborneY.clear();
+        airborne.clear();
     }
 
     private void tick() {
+        Set<UUID> seen = new HashSet<>();
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntitiesByClasses(Horse.class, Slime.class)) {
                 MarineMobService.MarineMob mob = mobs.find(entity);
                 if (mob == null || !mob.id().equals(entity.getUniqueId())) {
                     continue;
                 }
+                seen.add(entity.getUniqueId());
 
-                boolean inWater = isStrictWaterContact(entity.getLocation());
-                boolean unsupportedAir = MarineMotionTuning.isUnsupportedAir(inWater, entity.isOnGround());
-                if (unsupportedAir) {
+                Location location = entity.getLocation();
+                boolean inWater = isStrictWaterContact(location);
+                boolean supported = entity.isOnGround() || hasSolidSupport(location);
+                if (!inWater && !supported) {
                     if (entity instanceof Horse horse) {
                         horse.setAI(false);
                     }
-                    applyAirborneFallRecovery(entity);
+                    integrateAirborne(entity);
                     continue;
                 }
 
-                lastAirborneY.remove(entity.getUniqueId());
+                airborne.remove(entity.getUniqueId());
                 entity.setGravity(true);
 
                 if (!(entity instanceof Horse horse) || mob.type() != MarineMobType.ORCA) {
@@ -85,20 +92,64 @@ final class MarineFinalMotionController {
                 steerRiddenOrca(horse, pilot);
             }
         }
+        airborne.keySet().retainAll(seen);
     }
 
-    private void applyAirborneFallRecovery(Entity entity) {
-        entity.setGravity(true);
+    private void integrateAirborne(Entity entity) {
         UUID id = entity.getUniqueId();
-        double currentY = entity.getLocation().getY();
-        double previousY = lastAirborneY.getOrDefault(id, Double.NaN);
-        Vector velocity = entity.getVelocity();
+        AirState state = airborne.computeIfAbsent(id, ignored -> AirState.from(entity.getVelocity()));
 
-        if (MarineMotionTuning.needsFallKick(previousY, currentY, velocity.getY())) {
-            velocity.setY(MarineMotionTuning.fallKickVelocity(velocity.getY()));
-            entity.setVelocity(velocity);
+        // The carrier's own gravity/velocity integration is deliberately disabled only
+        // while airborne. We apply gravity ourselves and move the entity by coordinates.
+        entity.setGravity(false);
+
+        state.vertical = MarineAirKinematics.nextVerticalVelocity(state.vertical);
+        Vector displacement = new Vector(state.horizontalX, state.vertical, state.horizontalZ);
+        MoveResult result = sweepMove(entity.getLocation(), displacement);
+
+        if (result.enteredWater) {
+            entity.teleport(result.location);
+            entity.setGravity(true);
+            entity.setVelocity(new Vector(
+                    state.horizontalX,
+                    Math.min(state.vertical, -0.05),
+                    state.horizontalZ));
+            airborne.remove(id);
+            return;
         }
-        lastAirborneY.put(id, currentY);
+
+        if (result.hitSolid) {
+            entity.teleport(result.location);
+            entity.setGravity(true);
+            entity.setVelocity(new Vector(0.0, 0.0, 0.0));
+            airborne.remove(id);
+            return;
+        }
+
+        entity.teleport(result.location);
+        entity.setVelocity(new Vector(0.0, 0.0, 0.0));
+        state.horizontalX = MarineAirKinematics.nextHorizontalVelocity(state.horizontalX);
+        state.horizontalZ = MarineAirKinematics.nextHorizontalVelocity(state.horizontalZ);
+    }
+
+    private static MoveResult sweepMove(Location start, Vector displacement) {
+        int steps = MarineAirKinematics.sweepSteps(
+                displacement.getX(), displacement.getY(), displacement.getZ());
+        Vector increment = displacement.clone().multiply(1.0 / steps);
+        Location current = start.clone();
+        Location lastSafe = start.clone();
+
+        for (int i = 0; i < steps; i++) {
+            current.add(increment);
+            if (isStrictWaterContact(current)) {
+                return new MoveResult(current.clone(), true, false);
+            }
+            if (collidesAt(current)) {
+                return new MoveResult(lastSafe, false, true);
+            }
+            lastSafe = current.clone();
+        }
+        return new MoveResult(current, false, false);
     }
 
     private void steerRiddenOrca(Horse horse, Player pilot) {
@@ -138,8 +189,26 @@ final class MarineFinalMotionController {
                 && !isWaterAt(location.clone().add(0.0, -2.0, 0.0));
     }
 
+    private static boolean hasSolidSupport(Location location) {
+        Location probe = location.clone().add(0.0, -SUPPORT_PROBE, 0.0);
+        Block block = probe.getBlock();
+        return block.getType().isSolid() && !block.isPassable();
+    }
+
+    private static boolean collidesAt(Location location) {
+        return solidCollision(location)
+                || solidCollision(location.clone().add(0.0, 0.90, 0.0))
+                || solidCollision(location.clone().add(0.0, 1.65, 0.0));
+    }
+
+    private static boolean solidCollision(Location location) {
+        Block block = location.getBlock();
+        return block.getType().isSolid() && !block.isPassable();
+    }
+
     private static boolean isStrictWaterContact(Location location) {
-        return isWaterAt(location) || isWaterAt(location.clone().add(0.0, 0.35, 0.0));
+        return isWaterAt(location)
+                || isWaterAt(location.clone().add(0.0, 0.35, 0.0));
     }
 
     private static boolean isWaterAt(Location location) {
@@ -159,5 +228,24 @@ final class MarineFinalMotionController {
 
     private static double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static final class AirState {
+        private double horizontalX;
+        private double vertical;
+        private double horizontalZ;
+
+        private AirState(double horizontalX, double vertical, double horizontalZ) {
+            this.horizontalX = horizontalX;
+            this.vertical = vertical;
+            this.horizontalZ = horizontalZ;
+        }
+
+        private static AirState from(Vector velocity) {
+            return new AirState(velocity.getX(), velocity.getY(), velocity.getZ());
+        }
+    }
+
+    private record MoveResult(Location location, boolean enteredWater, boolean hitSolid) {
     }
 }
