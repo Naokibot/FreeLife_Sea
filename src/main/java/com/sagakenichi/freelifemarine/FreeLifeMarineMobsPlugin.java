@@ -24,7 +24,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new MarineMobListener(mobs), this);
         mobs.start();
         shows.start();
-        getLogger().info("FreeLifeMarineMobs 1.5.0 enabled: speed tiers, autonomous jumps, segmented hitboxes, marine food, and orca shows are available.");
+        getLogger().info("FreeLifeMarineMobs 1.6.0 enabled: gravity-aware swimming and two-block-deep pool compatibility are active.");
     }
 
     @Override
