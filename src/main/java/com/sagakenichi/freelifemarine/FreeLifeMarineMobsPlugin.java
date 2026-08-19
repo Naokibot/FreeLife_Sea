@@ -24,7 +24,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new MarineMobListener(mobs), this);
         mobs.start();
         shows.start();
-        getLogger().info("FreeLifeMarineMobs 1.7.0 enabled: smoother rendering, faster food pursuit, shallow-water holding, and denser hitboxes are active.");
+        getLogger().info("FreeLifeMarineMobs 1.8.0 enabled: more active autonomy and resilient manual show startup are active.");
     }
 
     @Override

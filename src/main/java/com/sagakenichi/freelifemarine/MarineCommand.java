@@ -121,7 +121,14 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
 
         String action = args[1].toLowerCase(Locale.ROOT);
         switch (action) {
-            case "start" -> sender.sendMessage(shows.startShow(args.length >= 3 ? args[2] : null));
+            case "start" -> {
+                String id = args.length >= 3 ? args[2] : null;
+                if (sender instanceof Player player) {
+                    sender.sendMessage(shows.startShow(id, player));
+                } else {
+                    sender.sendMessage(shows.startShow(id));
+                }
+            }
             case "stop" -> sender.sendMessage(shows.stopShow());
             case "status" -> sender.sendMessage(shows.status());
             case "reload" -> {

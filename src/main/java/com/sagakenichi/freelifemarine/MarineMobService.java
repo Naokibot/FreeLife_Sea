@@ -74,7 +74,7 @@ public final class MarineMobService {
         LivingEntity anchor = createAnchor(world, spawn, type);
         List<Interaction> hitboxes = createHitboxes(world, spawn, type);
         List<BlockDisplay> displays = createDisplays(world, spawn, type);
-        List<ArmorStand> passengerSeats = createPassengerSeats(world, spawn, type);
+        List<ArmorStand> passengerSeats = new ArrayList<>();
 
         MarineMob mob = new MarineMob(
                 type,
@@ -86,7 +86,7 @@ public final class MarineMobService {
                 origin.getYaw(),
                 randomTicks(100, 220),
                 ThreadLocalRandom.current().nextBoolean() ? 1 : -1,
-                randomTicks(160, 280)
+                randomTicks(120, 220)
         );
         mob.wasInWater = isWaterContact(spawn);
         refreshNaturalIntent(mob);
@@ -162,6 +162,17 @@ public final class MarineMobService {
             }
         }
 
+        int extraSeatCount = Math.max(0, mob.type.seats().size() - 1);
+        if (mob.passengerSeats.size() < extraSeatCount) {
+            int seatOffsetIndex = mob.passengerSeats.size() + 1;
+            MarineMobType.SeatOffset offset = mob.type.seats().get(seatOffsetIndex);
+            Location seatLocation = relative(mob.anchor.getLocation(), offset.forward(), offset.up(), offset.right());
+            ArmorStand seat = createPassengerSeat(mob.anchor.getWorld(), seatLocation);
+            mob.passengerSeats.add(seat);
+            seat.addPassenger(player);
+            return true;
+        }
+
         player.sendMessage(mob.type.displayName() + " has no free seats.");
         return true;
     }
@@ -179,6 +190,30 @@ public final class MarineMobService {
                 .sorted(Comparator.comparingDouble(mob -> mob.anchor.getLocation().distanceSquared(center)))
                 .limit(limit)
                 .toList();
+    }
+
+    public int usableOrcaCount(World world) {
+        if (world == null) {
+            return 0;
+        }
+        return (int) byAnchor.values().stream()
+                .filter(this::isUsable)
+                .filter(mob -> mob.type == MarineMobType.ORCA)
+                .filter(mob -> mob.anchor.getWorld().equals(world))
+                .count();
+    }
+
+    public double nearestOrcaDistance(World world, Location center) {
+        if (world == null || center == null || center.getWorld() != world) {
+            return Double.POSITIVE_INFINITY;
+        }
+        return byAnchor.values().stream()
+                .filter(this::isUsable)
+                .filter(mob -> mob.type == MarineMobType.ORCA)
+                .filter(mob -> mob.anchor.getWorld().equals(world))
+                .mapToDouble(mob -> Math.sqrt(mob.anchor.getLocation().distanceSquared(center)))
+                .min()
+                .orElse(Double.POSITIVE_INFINITY);
     }
 
     public boolean isUsable(MarineMob mob) {
@@ -650,32 +685,44 @@ public final class MarineMobService {
     }
 
     private void scheduleNextJump(MarineMob mob) {
-        if (mob.type == MarineMobType.ORCA) {
-            mob.nextJumpTick = mob.ageTicks + randomTicks(500, 1200);
-        } else if (mob.type == MarineMobType.SHARK) {
-            mob.nextJumpTick = mob.ageTicks + randomTicks(900, 2200);
-        } else {
+        if (mob.type == MarineMobType.CRAB) {
             mob.nextJumpTick = Long.MAX_VALUE;
+            return;
         }
+        mob.nextJumpTick = mob.ageTicks + randomTicks(
+                MarineActivityProfile.minJumpDelayTicks(mob.type),
+                MarineActivityProfile.maxJumpDelayTicksExclusive(mob.type));
     }
 
     private void refreshNaturalIntent(MarineMob mob) {
         Location location = mob.anchor.getLocation();
-        if (mob.type == MarineMobType.ORCA) {
-            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-38.0, 38.0)));
-            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 6);
-            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.024, 0.024);
-            mob.behaviorTicks = randomTicks(95, 220);
-        } else if (mob.type == MarineMobType.SHARK) {
-            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-24.0, 24.0)));
-            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 5);
-            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.012, 0.012);
-            mob.behaviorTicks = randomTicks(130, 270);
-        } else {
-            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-30.0, 30.0)));
+        if (mob.type == MarineMobType.CRAB) {
+            double turn = MarineActivityProfile.maxYawChange(mob.type);
+            mob.targetYaw = normalizeYaw((float) (location.getYaw()
+                    + ThreadLocalRandom.current().nextDouble(-turn, turn)));
             mob.speedLevel = MarineSpeedLevel.LEVEL_1;
-            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.65, 1.0);
-            mob.behaviorTicks = randomTicks(70, 150);
+            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.72, 1.0);
+            mob.behaviorTicks = randomTicks(
+                    MarineActivityProfile.minBehaviorTicks(mob.type),
+                    MarineActivityProfile.maxBehaviorTicksExclusive(mob.type));
+            return;
+        }
+
+        double turn = MarineActivityProfile.maxYawChange(mob.type);
+        mob.targetYaw = normalizeYaw((float) (location.getYaw()
+                + ThreadLocalRandom.current().nextDouble(-turn, turn)));
+        mob.speedLevel = MarineSpeedLevel.randomBetween(
+                MarineActivityProfile.minRoamLevel(mob.type),
+                MarineActivityProfile.maxRoamLevel(mob.type));
+        double vertical = MarineActivityProfile.verticalIntentRange(mob.type);
+        mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-vertical, vertical);
+        mob.behaviorTicks = randomTicks(
+                MarineActivityProfile.minBehaviorTicks(mob.type),
+                MarineActivityProfile.maxBehaviorTicksExclusive(mob.type));
+
+        if (ThreadLocalRandom.current().nextDouble() < MarineActivityProfile.burstChance(mob.type)) {
+            mob.speedLevel = MarineSpeedLevel.of(MarineActivityProfile.burstLevel(mob.type));
+            mob.behaviorTicks = Math.min(mob.behaviorTicks, randomTicks(28, 62));
         }
     }
 
@@ -858,7 +905,7 @@ public final class MarineMobService {
             Location blowhole = base.clone().add(forward.multiply(2.0)).add(0.0, 2.15, 0.0);
             world.spawnParticle(Particle.CLOUD, blowhole, 16, 0.25, 0.60, 0.25, 0.025);
             world.spawnParticle(Particle.SPLASH, blowhole, 9, 0.30, 0.25, 0.30, 0.05);
-            mob.nextBreathTick = mob.ageTicks + randomTicks(180, 320);
+            mob.nextBreathTick = mob.ageTicks + randomTicks(140, 240);
             if (!mob.showControlled && mob.jumpPhase == AutonomousJumpPhase.NONE) {
                 mob.verticalIntent = -0.018;
                 mob.behaviorTicks = Math.min(mob.behaviorTicks, 55);
@@ -1052,24 +1099,18 @@ public final class MarineMobService {
         });
     }
 
-    private static List<ArmorStand> createPassengerSeats(World world, Location spawn, MarineMobType type) {
-        int extraSeatCount = Math.max(0, type.seats().size() - 1);
-        List<ArmorStand> seats = new ArrayList<>(extraSeatCount);
-        for (int index = 0; index < extraSeatCount; index++) {
-            ArmorStand seat = world.spawn(spawn, ArmorStand.class, stand -> {
-                stand.setVisible(false);
-                stand.setSmall(true);
-                stand.setMarker(true);
-                stand.setGravity(false);
-                stand.setPersistent(false);
-                stand.setInvulnerable(true);
-                stand.setSilent(true);
-                stand.setBasePlate(false);
-                stand.setArms(false);
-            });
-            seats.add(seat);
-        }
-        return seats;
+    private static ArmorStand createPassengerSeat(World world, Location spawn) {
+        return world.spawn(spawn, ArmorStand.class, stand -> {
+            stand.setVisible(false);
+            stand.setSmall(true);
+            stand.setMarker(true);
+            stand.setGravity(false);
+            stand.setPersistent(false);
+            stand.setInvulnerable(true);
+            stand.setSilent(true);
+            stand.setBasePlate(false);
+            stand.setArms(false);
+        });
     }
 
     private void remove(MarineMob mob) {
@@ -1247,7 +1288,7 @@ public final class MarineMobService {
             this.anchor = anchor;
             this.hitboxes = List.copyOf(hitboxes);
             this.displays = List.copyOf(displays);
-            this.passengerSeats = List.copyOf(passengerSeats);
+            this.passengerSeats = new ArrayList<>(passengerSeats);
             this.health = health;
             this.targetYaw = targetYaw;
             this.visualYaw = targetYaw;
