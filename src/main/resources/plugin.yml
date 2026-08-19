@@ -1,17 +1,20 @@
 name: FreeLifeMarineMobs
-version: '1.3.0'
+version: '1.4.0'
 main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
 api-version: '1.21'
 author: Naokibot
-description: Animated shark, orca, and crab mobs with native riding and scheduled orca shows.
+description: Command-only animated marine mobs with natural autonomy, marine food attraction, riding, and scheduled orca shows.
 commands:
   marine:
-    description: Spawn marine mobs or manage orca shows.
-    usage: /marine <spawn|show>
+    description: Manage FreeLife marine mobs, marine food, and orca shows.
+    usage: /marine <spawn|food|show>
 permissions:
   freelifemarine.spawn:
     description: Allows spawning shark, orca, and crab mobs.
     default: op
+  freelifemarine.food:
+    description: Allows receiving the custom marine food item.
+    default: op
   freelifemarine.show:
-    description: Allows manual start, stop, status, list, and reload operations for orca shows.
+    description: Allows configuring and controlling orca shows.
     default: op

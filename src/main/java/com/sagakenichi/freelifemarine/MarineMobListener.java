@@ -16,6 +16,10 @@ public final class MarineMobListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEntityEvent event) {
+        if (mobs.feed(event.getPlayer(), event.getRightClicked())) {
+            event.setCancelled(true);
+            return;
+        }
         if (!mobs.mount(event.getPlayer(), event.getRightClicked())) {
             return;
         }

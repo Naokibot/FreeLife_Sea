@@ -11,9 +11,10 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        mobs = new MarineMobService(this);
+        MarineFood food = new MarineFood(this);
+        mobs = new MarineMobService(this, food);
         shows = new OrcaShowManager(this, mobs);
-        MarineCommand command = new MarineCommand(mobs, shows);
+        MarineCommand command = new MarineCommand(mobs, food, shows);
         PluginCommand marine = getCommand("marine");
         if (marine == null) {
             throw new IllegalStateException("Command 'marine' is missing from plugin.yml");
@@ -23,7 +24,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new MarineMobListener(mobs), this);
         mobs.start();
         shows.start();
-        getLogger().info("FreeLifeMarineMobs 1.3.0 enabled: scheduled orca shows and show music are available.");
+        getLogger().info("FreeLifeMarineMobs 1.4.0 enabled: natural autonomy, marine food, and in-game show setup are available.");
     }
 
     @Override
