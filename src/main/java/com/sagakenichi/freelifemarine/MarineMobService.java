@@ -354,9 +354,7 @@ public final class MarineMobService {
 
             emitWakeAndBreath(mob, inWater);
             updateFollowers(mob);
-            if ((mob.ageTicks & 1L) == 0L) {
-                updateDisplays(mob);
-            }
+            updateDisplays(mob);
         }
     }
 
@@ -364,7 +362,7 @@ public final class MarineMobService {
         if (mob.ageTicks < mob.nextFoodScanTick) {
             return mob.foodTarget == null ? null : mob.foodTarget.clone();
         }
-        mob.nextFoodScanTick = mob.ageTicks + 6L;
+        mob.nextFoodScanTick = mob.ageTicks + MarinePursuitProfile.foodScanIntervalTicks();
         Location origin = mob.anchor.getLocation();
         World world = origin.getWorld();
         double range = mob.type.foodAttractionRange();
@@ -498,7 +496,13 @@ public final class MarineMobService {
         Vector desired = forwardFromYaw(yaw).multiply(mob.speedLevel.blocksPerTick());
         double swimVertical = mob.verticalIntent
                 + Math.sin(mob.ageTicks * (mob.type == MarineMobType.ORCA ? 0.035 : 0.025)) * 0.006;
-        desired.setY(MarineWaterPhysics.swimmingVertical(swimVertical));
+        double controlledVertical = MarineWaterPhysics.shallowHeightHold(
+                MarineWaterPhysics.swimmingVertical(swimVertical),
+                isWaterAt(location.clone().add(0.0, 1.0, 0.0)),
+                isWaterAt(location),
+                isWaterAt(location.clone().add(0.0, -1.0, 0.0)),
+                isWaterAt(location.clone().add(0.0, -2.0, 0.0)));
+        desired.setY(controlledVertical);
         Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration());
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -11.0, 11.0));
@@ -692,14 +696,18 @@ public final class MarineMobService {
             horizontal.normalize();
         }
         float targetYaw = yawFromVector(horizontal);
-        float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.45F);
-        MarineSpeedLevel level = mob.type == MarineMobType.ORCA
-                ? MarineSpeedLevel.LEVEL_7 : MarineSpeedLevel.LEVEL_6;
+        float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.75F);
+        MarineSpeedLevel level = MarinePursuitProfile.speedLevel(mob.type, horizontalDistance);
         double speed = level.blocksPerTick();
 
         boolean targetInWater = isWaterAt(target) || isWaterAt(target.clone().add(0.0, -0.7, 0.0));
         double vertical = targetInWater
-                ? MarineWaterPhysics.swimmingVertical(clamp(delta.getY() * 0.08, -0.060, 0.060))
+                ? MarineWaterPhysics.shallowHeightHold(
+                        MarineWaterPhysics.swimmingVertical(clamp(delta.getY() * 0.10, -0.070, 0.070)),
+                        isWaterAt(location.clone().add(0.0, 1.0, 0.0)),
+                        isWaterAt(location),
+                        isWaterAt(location.clone().add(0.0, -1.0, 0.0)),
+                        isWaterAt(location.clone().add(0.0, -2.0, 0.0)))
                 : 0.0;
         if (!isWaterAt(location.clone().add(forwardFromYaw(yaw).multiply(1.6)))) {
             speed = MarineSpeedLevel.LEVEL_2.blocksPerTick();
@@ -707,7 +715,8 @@ public final class MarineMobService {
         }
 
         Vector desired = forwardFromYaw(yaw).multiply(speed).setY(vertical);
-        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration() * 1.35);
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired,
+                mob.type.autonomousAcceleration() * MarinePursuitProfile.accelerationMultiplier(mob.type));
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -12.0, 12.0));
     }
@@ -779,7 +788,7 @@ public final class MarineMobService {
 
         double speed = mob.type.cruiseSpeed() * mob.cruiseFactor * (inWater ? 0.78 : 1.0);
         if (foodTarget != null) {
-            speed *= 1.15;
+            speed *= 1.55;
         }
         Vector desired = side.normalize().multiply(speed);
         desired.setY(inWater ? Math.sin(mob.ageTicks * 0.08) * 0.004 : (isSolidBelow(location) ? 0.0 : -0.10));
@@ -896,11 +905,15 @@ public final class MarineMobService {
 
     private void updateDisplays(MarineMob mob) {
         Location base = mob.anchor.getLocation();
-        float yaw = base.getYaw();
+        float visualTurnRate = mob.type == MarineMobType.CRAB ? 10.0F : 6.5F;
+        mob.visualYaw = turnTowards(mob.visualYaw, base.getYaw(), visualTurnRate);
+        float yaw = mob.visualYaw;
         double verticalVelocity = mob.anchor.getVelocity().getY();
-        float pitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC
+        float targetPitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC
                 ? (float) clamp(-verticalVelocity * 38.0, -18.0, 18.0)
                 : 0.0F;
+        mob.visualPitch += (targetPitch - mob.visualPitch) * 0.38F;
+        float pitch = mob.visualPitch;
         double horizontalSpeed = Math.hypot(mob.anchor.getVelocity().getX(), mob.anchor.getVelocity().getZ());
         double referenceSpeed = mob.type == MarineMobType.CRAB
                 ? Math.max(0.06, mob.type.cruiseSpeed())
@@ -984,7 +997,7 @@ public final class MarineMobService {
                 entity.setShadowStrength(0.0F);
                 entity.setInterpolationDelay(0);
                 entity.setInterpolationDuration(2);
-                entity.setTeleportDuration(2);
+                entity.setTeleportDuration(1);
                 entity.setViewRange(2.5F);
                 entity.setDisplayWidth(Math.max(1.0F, type.interactionWidth()));
                 entity.setDisplayHeight(Math.max(1.0F, type.interactionHeight()));
@@ -1223,6 +1236,8 @@ public final class MarineMobService {
         private int jumpHeight;
         private MarineSpeedLevel jumpSpeedLevel = MarineSpeedLevel.LEVEL_8;
         private boolean shallowJump;
+        private float visualYaw;
+        private float visualPitch;
 
         private MarineMob(MarineMobType type, LivingEntity anchor, List<Interaction> hitboxes,
                           List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
@@ -1235,6 +1250,7 @@ public final class MarineMobService {
             this.passengerSeats = List.copyOf(passengerSeats);
             this.health = health;
             this.targetYaw = targetYaw;
+            this.visualYaw = targetYaw;
             this.behaviorTicks = behaviorTicks;
             this.sideDirection = sideDirection;
             this.nextBreathTick = nextBreathTick;
