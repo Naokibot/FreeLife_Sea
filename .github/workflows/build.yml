@@ -22,9 +22,10 @@ jobs:
         run: mvn -B -U verify
       - name: Verify release jar
         run: |
-          JAR=target/FreeLifeMarineMobs-1.0.0-Spigot-1.21.1.jar
+          JAR=target/FreeLifeMarineMobs-1.1.0-Spigot-1.21.1.jar
           unzip -t "$JAR"
           jar tf "$JAR" | grep -q '^plugin.yml$'
+          jar tf "$JAR" | grep -q 'MarineMobService.class$'
           javap -verbose -classpath "$JAR" com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin | grep 'major version: 65'
           if jar tf "$JAR" | grep -Eq '^org/bukkit/'; then
             echo 'Bukkit classes must not be shaded into the plugin.' >&2
@@ -32,6 +33,6 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: FreeLifeMarineMobs-1.0.0-Spigot-1.21.1
-          path: target/FreeLifeMarineMobs-1.0.0-Spigot-1.21.1.jar
+          name: FreeLifeMarineMobs-1.1.0-Spigot-1.21.1
+          path: target/FreeLifeMarineMobs-1.1.0-Spigot-1.21.1.jar
           if-no-files-found: error
