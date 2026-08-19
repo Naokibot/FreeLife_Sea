@@ -72,20 +72,14 @@ public final class MarineMobService {
         }
 
         LivingEntity anchor = createAnchor(world, spawn, type);
-        Interaction interaction = world.spawn(spawn, Interaction.class, hitbox -> {
-            hitbox.setInteractionWidth(type.interactionWidth());
-            hitbox.setInteractionHeight(type.interactionHeight());
-            hitbox.setResponsive(true);
-            hitbox.setPersistent(false);
-        });
-
+        List<Interaction> hitboxes = createHitboxes(world, spawn, type);
         List<BlockDisplay> displays = createDisplays(world, spawn, type);
         List<ArmorStand> passengerSeats = createPassengerSeats(world, spawn, type);
 
         MarineMob mob = new MarineMob(
                 type,
                 anchor,
-                interaction,
+                hitboxes,
                 displays,
                 passengerSeats,
                 type.maxHealth(),
@@ -96,10 +90,13 @@ public final class MarineMobService {
         );
         mob.wasInWater = isWaterContact(spawn);
         refreshNaturalIntent(mob);
+        scheduleNextJump(mob);
 
         byAnchor.put(anchor.getUniqueId(), mob);
         byEntity.put(anchor.getUniqueId(), mob);
-        byEntity.put(interaction.getUniqueId(), mob);
+        for (Interaction hitbox : hitboxes) {
+            byEntity.put(hitbox.getUniqueId(), mob);
+        }
         updateFollowers(mob);
         updateDisplays(mob);
         return mob;
@@ -200,6 +197,7 @@ public final class MarineMobService {
             }
         }
         mob.showControlled = true;
+        mob.jumpPhase = AutonomousJumpPhase.NONE;
         mob.cachedWaterDirection = null;
         mob.foodTarget = null;
         mob.anchor.setGravity(false);
@@ -218,12 +216,13 @@ public final class MarineMobService {
         mob.behaviorTicks = randomTicks(80, 170);
         mob.anchor.setGravity(!isWaterContact(mob.anchor.getLocation()));
         refreshNaturalIntent(mob);
+        scheduleNextJump(mob);
         if (mob.anchor instanceof Horse horse) {
             horse.setAI(false);
         }
     }
 
-    public void guideShow(MarineMob mob, Location target, double speed) {
+    public void guideShow(MarineMob mob, Location target, double requestedSpeed) {
         if (!isUsable(mob) || !mob.showControlled || target == null || target.getWorld() != mob.anchor.getWorld()) {
             return;
         }
@@ -236,7 +235,8 @@ public final class MarineMobService {
         }
 
         Vector direction = delta.normalize();
-        double vertical = clamp(direction.getY() * speed, -0.16, 0.16);
+        double speed = MarineSpeedLevel.nearestBlocksPerTick(requestedSpeed).blocksPerTick();
+        double vertical = clamp(direction.getY() * speed, -0.18, 0.18);
         direction.setY(0.0);
         if (direction.lengthSquared() < DIRECTION_EPSILON) {
             direction = forwardFromYaw(current.getYaw());
@@ -260,7 +260,7 @@ public final class MarineMobService {
         mob.anchor.setVelocity(slowed);
     }
 
-    public void launchShowJump(MarineMob mob, Location landing, double horizontalSpeed, double verticalVelocity) {
+    public void launchShowJump(MarineMob mob, Location landing, double requestedHorizontalSpeed, double verticalVelocity) {
         if (!isUsable(mob) || !mob.showControlled || landing == null || landing.getWorld() != mob.anchor.getWorld()) {
             return;
         }
@@ -271,8 +271,9 @@ public final class MarineMobService {
         } else {
             horizontal.normalize();
         }
+        double horizontalSpeed = MarineSpeedLevel.nearestBlocksPerTick(requestedHorizontalSpeed).blocksPerTick();
         mob.anchor.setGravity(true);
-        mob.anchor.setVelocity(horizontal.clone().multiply(horizontalSpeed).setY(verticalVelocity));
+        mob.anchor.setVelocity(horizontal.clone().multiply(horizontalSpeed).setY(Math.min(verticalVelocity, 1.344)));
         mob.anchor.setRotation(yawFromVector(horizontal), -12.0F);
     }
 
@@ -308,7 +309,9 @@ public final class MarineMobService {
             if (!mob.anchor.isValid() || mob.anchor.isDead()) {
                 removeEntities(mob);
                 byEntity.remove(mob.anchor.getUniqueId());
-                byEntity.remove(mob.interaction.getUniqueId());
+                for (Interaction hitbox : mob.hitboxes) {
+                    byEntity.remove(hitbox.getUniqueId());
+                }
                 iterator.remove();
                 continue;
             }
@@ -331,7 +334,10 @@ public final class MarineMobService {
                 }
                 if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
                     if (pilot != null) {
+                        mob.jumpPhase = AutonomousJumpPhase.NONE;
                         moveWithNativeRider(mob, inWater);
+                    } else if (mob.jumpPhase != AutonomousJumpPhase.NONE) {
+                        moveAutonomousJump(mob, inWater);
                     } else {
                         Location foodTarget = scanFoodTarget(mob);
                         moveAquaticAutonomously(mob, inWater, foodTarget);
@@ -407,15 +413,19 @@ public final class MarineMobService {
 
     private void moveWithNativeRider(MarineMob mob, boolean inWater) {
         mob.anchor.setGravity(true);
+        MarineSpeedLevel maxLevel = mob.type == MarineMobType.ORCA
+                ? MarineSpeedLevel.LEVEL_7 : MarineSpeedLevel.LEVEL_6;
+        double maxSpeed = maxLevel.blocksPerTick();
+
         Vector velocity = mob.anchor.getVelocity();
         double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
-        if (horizontalSpeed > mob.type.rideSpeed()) {
-            double factor = mob.type.rideSpeed() / horizontalSpeed;
+        if (horizontalSpeed > maxSpeed) {
+            double factor = maxSpeed / horizontalSpeed;
             velocity.setX(velocity.getX() * factor);
             velocity.setZ(velocity.getZ() * factor);
             mob.anchor.setVelocity(velocity);
         } else if (inWater && horizontalSpeed > 0.025) {
-            double assisted = Math.min(mob.type.rideSpeed(), horizontalSpeed * 1.06 + 0.002);
+            double assisted = Math.min(maxSpeed, horizontalSpeed * 1.09 + 0.004);
             double factor = assisted / horizontalSpeed;
             velocity.setX(velocity.getX() * factor);
             velocity.setZ(velocity.getZ() * factor);
@@ -445,9 +455,15 @@ public final class MarineMobService {
             return;
         }
 
+        if (mob.ageTicks >= mob.nextJumpTick && canStartAutonomousJump(mob, location)) {
+            beginAutonomousJump(mob);
+            moveAutonomousJump(mob, true);
+            return;
+        }
+
         mob.behaviorTicks--;
         Vector currentForward = forwardFromYaw(location.getYaw());
-        Location ahead = location.clone().add(currentForward.clone().multiply(mob.type == MarineMobType.SHARK ? 2.4 : 2.0));
+        Location ahead = location.clone().add(currentForward.clone().multiply(mob.type == MarineMobType.SHARK ? 2.6 : 2.3));
         boolean waterAhead = isWaterAt(ahead) || isWaterAt(ahead.clone().add(0.0, -0.75, 0.0));
         if (mob.behaviorTicks <= 0) {
             refreshNaturalIntent(mob);
@@ -455,11 +471,14 @@ public final class MarineMobService {
         if (!waterAhead) {
             mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(120.0, 235.0)));
             mob.behaviorTicks = randomTicks(45, 90);
+            mob.speedLevel = MarineSpeedLevel.LEVEL_2;
         }
 
         if (mob.type == MarineMobType.ORCA && mob.ageTicks + 45L >= mob.nextBreathTick) {
-            mob.verticalIntent = 0.050;
-            mob.cruiseFactor = Math.max(mob.cruiseFactor, 0.82);
+            mob.verticalIntent = 0.060;
+            if (mob.speedLevel.level() < 5) {
+                mob.speedLevel = MarineSpeedLevel.LEVEL_5;
+            }
         } else if (mob.type == MarineMobType.SHARK && isNearSurface(location)) {
             mob.verticalIntent = Math.min(mob.verticalIntent, -0.020);
         }
@@ -472,27 +491,172 @@ public final class MarineMobService {
         }
 
         float yaw = turnTowards(location.getYaw(), mob.targetYaw, mob.type.autonomousTurnRate());
-        Vector desired = forwardFromYaw(yaw).multiply(mob.type.cruiseSpeed() * mob.cruiseFactor);
+        Vector desired = forwardFromYaw(yaw).multiply(mob.speedLevel.blocksPerTick());
         desired.setY(mob.verticalIntent + Math.sin(mob.ageTicks * (mob.type == MarineMobType.ORCA ? 0.035 : 0.025)) * 0.006);
         Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration());
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -11.0, 11.0));
     }
 
+    private boolean canStartAutonomousJump(MarineMob mob, Location location) {
+        if (mob.type == MarineMobType.CRAB || !isNearSurface(location)) {
+            return false;
+        }
+        if (!isWaterAt(location.clone().add(0.0, -1.0, 0.0))
+                || !isWaterAt(location.clone().add(0.0, -2.0, 0.0))) {
+            return false;
+        }
+        return hasClearJumpColumn(location, 11);
+    }
+
+    private void beginAutonomousJump(MarineMob mob) {
+        mob.jumpPhase = AutonomousJumpPhase.DIVE;
+        mob.jumpPhaseTicks = mob.type == MarineMobType.ORCA ? 24 : 18;
+        mob.jumpHeight = mob.type == MarineMobType.ORCA
+                ? ThreadLocalRandom.current().nextInt(3, 11)
+                : ThreadLocalRandom.current().nextInt(2, 6);
+        int jumpLevel = mob.type == MarineMobType.ORCA
+                ? (mob.jumpHeight >= 9 ? 10 : mob.jumpHeight >= 6 ? 9 : 8)
+                : (mob.jumpHeight >= 4 ? 7 : 6);
+        mob.jumpSpeedLevel = MarineSpeedLevel.of(jumpLevel);
+        mob.targetYaw = normalizeYaw((float) (mob.anchor.getLocation().getYaw()
+                + ThreadLocalRandom.current().nextDouble(-12.0, 12.0)));
+        mob.foodTarget = null;
+    }
+
+    private void moveAutonomousJump(MarineMob mob, boolean inWater) {
+        Location location = mob.anchor.getLocation();
+
+        if (mob.jumpPhase == AutonomousJumpPhase.AIRBORNE) {
+            mob.anchor.setGravity(true);
+            mob.airborneTicks++;
+            if ((inWater && mob.airborneTicks > 6) || mob.airborneTicks > 160) {
+                finishAutonomousJump(mob, inWater);
+            }
+            return;
+        }
+
+        if (!inWater) {
+            finishAutonomousJump(mob, false);
+            returnToWater(mob, location);
+            return;
+        }
+
+        float yaw = turnTowards(location.getYaw(), mob.targetYaw,
+                mob.jumpPhase == AutonomousJumpPhase.DIVE ? 1.2F : 0.8F);
+        MarineSpeedLevel speedLevel;
+        double vertical;
+        double acceleration;
+
+        if (mob.jumpPhase == AutonomousJumpPhase.DIVE) {
+            speedLevel = mob.type == MarineMobType.ORCA ? MarineSpeedLevel.LEVEL_5 : MarineSpeedLevel.LEVEL_4;
+            vertical = -0.095;
+            acceleration = 0.12;
+            mob.jumpPhaseTicks--;
+            if (mob.jumpPhaseTicks <= 0) {
+                mob.jumpPhase = AutonomousJumpPhase.CHARGE;
+                mob.jumpPhaseTicks = 48;
+            }
+        } else {
+            speedLevel = mob.jumpSpeedLevel;
+            vertical = 0.135;
+            acceleration = 0.18;
+            mob.jumpPhaseTicks--;
+            if (isNearSurface(location) && mob.jumpPhaseTicks <= 34) {
+                launchAutonomousJump(mob, yaw);
+                return;
+            }
+            if (mob.jumpPhaseTicks <= 0) {
+                finishAutonomousJump(mob, true);
+                return;
+            }
+        }
+
+        Vector desired = forwardFromYaw(yaw).multiply(speedLevel.blocksPerTick()).setY(vertical);
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, acceleration);
+        mob.anchor.setGravity(false);
+        mob.anchor.setVelocity(velocity);
+        mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 120.0, -15.0, 15.0));
+    }
+
+    private void launchAutonomousJump(MarineMob mob, float yaw) {
+        Vector horizontal = forwardFromYaw(yaw).multiply(mob.jumpSpeedLevel.blocksPerTick());
+        double verticalVelocity = jumpVelocityForHeight(mob.jumpHeight);
+        mob.anchor.setGravity(true);
+        mob.anchor.setVelocity(horizontal.setY(verticalVelocity));
+        mob.anchor.setRotation(yaw, -16.0F);
+        mob.jumpPhase = AutonomousJumpPhase.AIRBORNE;
+        mob.airborneTicks = 0;
+
+        Location location = mob.anchor.getLocation();
+        World world = location.getWorld();
+        world.spawnParticle(Particle.SPLASH, location, mob.type == MarineMobType.ORCA ? 50 : 28,
+                mob.type == MarineMobType.ORCA ? 1.4 : 0.8, 0.45,
+                mob.type == MarineMobType.ORCA ? 1.4 : 0.8, 0.14);
+        world.playSound(location, Sound.ENTITY_GENERIC_SPLASH,
+                mob.type == MarineMobType.ORCA ? 1.35F : 0.9F, 0.86F);
+    }
+
+    private void finishAutonomousJump(MarineMob mob, boolean inWater) {
+        mob.jumpPhase = AutonomousJumpPhase.NONE;
+        mob.airborneTicks = 0;
+        mob.jumpPhaseTicks = 0;
+        mob.anchor.setGravity(!inWater);
+        scheduleNextJump(mob);
+        refreshNaturalIntent(mob);
+    }
+
+    private static double jumpVelocityForHeight(int blocks) {
+        return switch (Math.max(2, Math.min(10, blocks))) {
+            case 2 -> 0.545;
+            case 3 -> 0.685;
+            case 4 -> 0.804;
+            case 5 -> 0.910;
+            case 6 -> 1.008;
+            case 7 -> 1.099;
+            case 8 -> 1.185;
+            case 9 -> 1.266;
+            case 10 -> 1.344;
+            default -> 0.545;
+        };
+    }
+
+    private static boolean hasClearJumpColumn(Location location, int height) {
+        Location probe = location.clone();
+        for (int y = 1; y <= height; y++) {
+            Block block = probe.clone().add(0.0, y, 0.0).getBlock();
+            if (block.getType().isSolid()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void scheduleNextJump(MarineMob mob) {
+        if (mob.type == MarineMobType.ORCA) {
+            mob.nextJumpTick = mob.ageTicks + randomTicks(500, 1200);
+        } else if (mob.type == MarineMobType.SHARK) {
+            mob.nextJumpTick = mob.ageTicks + randomTicks(900, 2200);
+        } else {
+            mob.nextJumpTick = Long.MAX_VALUE;
+        }
+    }
+
     private void refreshNaturalIntent(MarineMob mob) {
         Location location = mob.anchor.getLocation();
         if (mob.type == MarineMobType.ORCA) {
             mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-38.0, 38.0)));
-            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.56, 1.08);
-            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.020, 0.020);
+            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 6);
+            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.024, 0.024);
             mob.behaviorTicks = randomTicks(95, 220);
         } else if (mob.type == MarineMobType.SHARK) {
             mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-24.0, 24.0)));
-            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.82, 1.08);
+            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 5);
             mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.012, 0.012);
             mob.behaviorTicks = randomTicks(130, 270);
         } else {
             mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-30.0, 30.0)));
+            mob.speedLevel = MarineSpeedLevel.LEVEL_1;
             mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.65, 1.0);
             mob.behaviorTicks = randomTicks(70, 150);
         }
@@ -516,12 +680,14 @@ public final class MarineMobService {
         }
         float targetYaw = yawFromVector(horizontal);
         float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.45F);
-        double speed = mob.type.cruiseSpeed() * (mob.type == MarineMobType.ORCA ? 1.22 : 1.15);
+        MarineSpeedLevel level = mob.type == MarineMobType.ORCA
+                ? MarineSpeedLevel.LEVEL_7 : MarineSpeedLevel.LEVEL_6;
+        double speed = level.blocksPerTick();
 
         boolean targetInWater = isWaterAt(target) || isWaterAt(target.clone().add(0.0, -0.7, 0.0));
-        double vertical = targetInWater ? clamp(delta.getY() * 0.08, -0.055, 0.055) : 0.0;
+        double vertical = targetInWater ? clamp(delta.getY() * 0.08, -0.060, 0.060) : 0.0;
         if (!isWaterAt(location.clone().add(forwardFromYaw(yaw).multiply(1.6)))) {
-            speed *= 0.35;
+            speed = MarineSpeedLevel.LEVEL_2.blocksPerTick();
             vertical = Math.min(vertical, 0.0);
         }
 
@@ -541,7 +707,7 @@ public final class MarineMobService {
             float targetYaw = yawFromVector(horizontal);
             float yaw = turnTowards(location.getYaw(), targetYaw, 3.2F);
             mob.anchor.setRotation(yaw, 0.0F);
-            Vector velocity = horizontal.multiply(mob.type.cruiseSpeed() * 0.42);
+            Vector velocity = horizontal.multiply(MarineSpeedLevel.LEVEL_2.blocksPerTick());
             velocity.setY(isSolidBelow(location) && mob.ageTicks % 14L == 0L ? 0.11 : -0.08);
             mob.anchor.setVelocity(velocity);
         } else {
@@ -629,10 +795,12 @@ public final class MarineMobService {
             case CRAB -> 7;
         };
         double spread = mob.type == MarineMobType.ORCA ? 1.85 : mob.type == MarineMobType.SHARK ? 1.0 : 0.20;
-        world.spawnParticle(Particle.SPLASH, location, splashCount, spread, mob.type == MarineMobType.CRAB ? 0.18 : 0.60,
+        world.spawnParticle(Particle.SPLASH, location, splashCount, spread,
+                mob.type == MarineMobType.CRAB ? 0.18 : 0.60,
                 spread, mob.type == MarineMobType.CRAB ? 0.05 : 0.18);
         if (inWater) {
-            world.spawnParticle(Particle.BUBBLE, location, Math.max(3, splashCount / 3), spread * 0.7, 0.30, spread * 0.7, 0.06);
+            world.spawnParticle(Particle.BUBBLE, location, Math.max(3, splashCount / 3),
+                    spread * 0.7, 0.30, spread * 0.7, 0.06);
         }
         world.playSound(location, Sound.ENTITY_GENERIC_SPLASH,
                 mob.type == MarineMobType.ORCA ? 1.55F : mob.type == MarineMobType.SHARK ? 0.9F : 0.32F,
@@ -653,9 +821,11 @@ public final class MarineMobService {
         double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
         if (horizontalSpeed > 0.08 && isNearSurface(base) && mob.ageTicks % 5L == 0L) {
             Vector forward = forwardFromYaw(base.getYaw());
-            Location wake = base.clone().subtract(forward.multiply(mob.type == MarineMobType.ORCA ? 3.8 : mob.type == MarineMobType.SHARK ? 2.2 : 0.4));
+            Location wake = base.clone().subtract(forward.multiply(
+                    mob.type == MarineMobType.ORCA ? 3.8 : mob.type == MarineMobType.SHARK ? 2.2 : 0.4));
             int count = mob.type == MarineMobType.ORCA ? 14 : mob.type == MarineMobType.SHARK ? 7 : 2;
-            world.spawnParticle(Particle.SPLASH, wake, count, mob.type == MarineMobType.CRAB ? 0.12 : 0.62,
+            world.spawnParticle(Particle.SPLASH, wake, count,
+                    mob.type == MarineMobType.CRAB ? 0.12 : 0.62,
                     0.20, mob.type == MarineMobType.CRAB ? 0.12 : 0.62, 0.05);
         }
 
@@ -665,7 +835,7 @@ public final class MarineMobService {
             world.spawnParticle(Particle.CLOUD, blowhole, 16, 0.25, 0.60, 0.25, 0.025);
             world.spawnParticle(Particle.SPLASH, blowhole, 9, 0.30, 0.25, 0.30, 0.05);
             mob.nextBreathTick = mob.ageTicks + randomTicks(180, 320);
-            if (!mob.showControlled) {
+            if (!mob.showControlled && mob.jumpPhase == AutonomousJumpPhase.NONE) {
                 mob.verticalIntent = -0.018;
                 mob.behaviorTicks = Math.min(mob.behaviorTicks, 55);
             }
@@ -674,8 +844,17 @@ public final class MarineMobService {
 
     private void updateFollowers(MarineMob mob) {
         Location base = mob.anchor.getLocation();
-        mob.interaction.teleport(base.clone().add(0.0, mob.type == MarineMobType.CRAB ? 0.02 : 0.15, 0.0));
-        mob.interaction.setRotation(base.getYaw(), 0.0F);
+        List<MarineHitboxProfile.Hitbox> specs = MarineHitboxProfile.forType(mob.type);
+        for (int index = 0; index < mob.hitboxes.size(); index++) {
+            Interaction hitbox = mob.hitboxes.get(index);
+            if (!hitbox.isValid()) {
+                continue;
+            }
+            MarineHitboxProfile.Hitbox spec = specs.get(index);
+            Location target = relative(base, spec.forward(), spec.up(), spec.right());
+            hitbox.teleport(target);
+            hitbox.setRotation(base.getYaw(), 0.0F);
+        }
 
         List<MarineMobType.SeatOffset> offsets = mob.type.seats();
         for (int index = 0; index < mob.passengerSeats.size(); index++) {
@@ -705,10 +884,13 @@ public final class MarineMobService {
         float yaw = base.getYaw();
         double verticalVelocity = mob.anchor.getVelocity().getY();
         float pitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC
-                ? (float) clamp(-verticalVelocity * 38.0, -16.0, 16.0)
+                ? (float) clamp(-verticalVelocity * 38.0, -18.0, 18.0)
                 : 0.0F;
         double horizontalSpeed = Math.hypot(mob.anchor.getVelocity().getX(), mob.anchor.getVelocity().getZ());
-        double motionScale = clamp(horizontalSpeed / Math.max(0.06, mob.type.cruiseSpeed()), 0.12, 1.42);
+        double referenceSpeed = mob.type == MarineMobType.CRAB
+                ? Math.max(0.06, mob.type.cruiseSpeed())
+                : Math.max(0.10, mob.speedLevel.blocksPerTick());
+        double motionScale = clamp(horizontalSpeed / referenceSpeed, 0.12, 1.55);
         List<MarineMobType.ModelPart> parts = mob.type.parts();
 
         for (int index = 0; index < parts.size(); index++) {
@@ -798,6 +980,21 @@ public final class MarineMobService {
         return displays;
     }
 
+    private static List<Interaction> createHitboxes(World world, Location spawn, MarineMobType type) {
+        List<Interaction> hitboxes = new ArrayList<>();
+        for (MarineHitboxProfile.Hitbox spec : MarineHitboxProfile.forType(type)) {
+            Location location = relative(spawn, spec.forward(), spec.up(), spec.right());
+            Interaction interaction = world.spawn(location, Interaction.class, hitbox -> {
+                hitbox.setInteractionWidth(spec.width());
+                hitbox.setInteractionHeight(spec.height());
+                hitbox.setResponsive(true);
+                hitbox.setPersistent(false);
+            });
+            hitboxes.add(interaction);
+        }
+        return List.copyOf(hitboxes);
+    }
+
     private static LivingEntity createAnchor(World world, Location spawn, MarineMobType type) {
         if (type.rideable()) {
             return world.spawn(spawn, Horse.class, horse -> {
@@ -848,7 +1045,9 @@ public final class MarineMobService {
     private void remove(MarineMob mob) {
         byAnchor.remove(mob.anchor.getUniqueId());
         byEntity.remove(mob.anchor.getUniqueId());
-        byEntity.remove(mob.interaction.getUniqueId());
+        for (Interaction hitbox : mob.hitboxes) {
+            byEntity.remove(hitbox.getUniqueId());
+        }
         removeEntities(mob);
     }
 
@@ -864,8 +1063,10 @@ public final class MarineMobService {
                 seat.remove();
             }
         }
-        if (mob.interaction.isValid()) {
-            mob.interaction.remove();
+        for (Interaction hitbox : mob.hitboxes) {
+            if (hitbox.isValid()) {
+                hitbox.remove();
+            }
         }
         if (mob.anchor.isValid()) {
             mob.anchor.eject();
@@ -970,10 +1171,17 @@ public final class MarineMobService {
         return ThreadLocalRandom.current().nextInt(minInclusive, maxExclusive);
     }
 
+    private enum AutonomousJumpPhase {
+        NONE,
+        DIVE,
+        CHARGE,
+        AIRBORNE
+    }
+
     public static final class MarineMob {
         private final MarineMobType type;
         private final LivingEntity anchor;
-        private final Interaction interaction;
+        private final List<Interaction> hitboxes;
         private final List<BlockDisplay> displays;
         private final List<ArmorStand> passengerSeats;
         private double health;
@@ -990,14 +1198,21 @@ public final class MarineMobService {
         private int pauseTicks;
         private long nextFoodScanTick;
         private Location foodTarget;
+        private MarineSpeedLevel speedLevel = MarineSpeedLevel.LEVEL_3;
+        private long nextJumpTick;
+        private AutonomousJumpPhase jumpPhase = AutonomousJumpPhase.NONE;
+        private int jumpPhaseTicks;
+        private int airborneTicks;
+        private int jumpHeight;
+        private MarineSpeedLevel jumpSpeedLevel = MarineSpeedLevel.LEVEL_8;
 
-        private MarineMob(MarineMobType type, LivingEntity anchor, Interaction interaction,
+        private MarineMob(MarineMobType type, LivingEntity anchor, List<Interaction> hitboxes,
                           List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
                           double health, float targetYaw, int behaviorTicks,
                           int sideDirection, long nextBreathTick) {
             this.type = type;
             this.anchor = anchor;
-            this.interaction = interaction;
+            this.hitboxes = List.copyOf(hitboxes);
             this.displays = List.copyOf(displays);
             this.passengerSeats = List.copyOf(passengerSeats);
             this.health = health;
@@ -1010,8 +1225,10 @@ public final class MarineMobService {
         public MarineMobType type() { return type; }
         public double health() { return health; }
         public int seatCount() { return type.seats().size(); }
+        public int hitboxCount() { return hitboxes.size(); }
         public UUID id() { return anchor.getUniqueId(); }
         public boolean showControlled() { return showControlled; }
         public Location location() { return anchor.getLocation().clone(); }
+        public int speedLevel() { return speedLevel.level(); }
     }
 }

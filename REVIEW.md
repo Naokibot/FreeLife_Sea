@@ -1,65 +1,71 @@
-# FreeLifeMarineMobs 1.4.0 review
+# FreeLifeMarineMobs 1.5.0 review
 
 Target: Spigot 1.21.1 / Java 21
 
 ## Requested changes
 
-- reduce the oversized crab;
-- make autonomous swimming look more biological;
-- add a custom `海の餌` item that attracts marine mobs;
-- configure orca-show center and time from Minecraft commands;
-- improve shark/orca graphics again.
+- make orca swimming faster;
+- provide ten speed levels, with the fastest reaching 20 blocks/s, and use the levels for different behavior;
+- allow autonomous swimming animals to jump/breach;
+- allow jumps up to 10 blocks;
+- add hit detection to every custom marine mob.
 
 ## Review findings and design choices
 
-1. **The crab was proportionally too large.**
-   - Interaction width was reduced from 3.2 to 1.35 blocks and height from 1.6 to 0.72 blocks.
-   - The visible shell, claws, eyes, and all eight legs were rescaled with it.
-   - Cruise speed was reduced and short pauses were added so the smaller crab does not look like a fast sliding vehicle.
+1. **Speed values needed one common unit and one source of truth.**
+   - `MarineSpeedLevel` defines exactly ten levels.
+   - Level N is `2 * N` blocks/s, so level 10 is exactly 20 blocks/s = 1.0 block/tick.
+   - Existing show velocity requests are quantized to the nearest defined level instead of maintaining a separate arbitrary speed scale.
 
-2. **The old autonomous aquatic controller looked synthetic.**
-   - It replaced velocity every tick at near-constant speed and used a fixed sine wave for vertical motion.
-   - Version 1.4 stores a changing natural intent: target heading, speed factor, vertical intent, and behavior duration.
-   - Velocity is blended toward the desired velocity, producing acceleration/deceleration instead of abrupt speed replacement.
-   - Sharks use steadier speed, longer turns, and smaller depth changes.
-   - Orcas vary speed more and periodically rise to breathe before resuming deeper swimming.
+2. **The maximum speed should not become the default cruise speed.**
+   - Orcas roam mainly at levels 3-6 and use higher levels for food pursuit, surfacing, and breach charging.
+   - Sharks use a narrower, generally lower range.
+   - Edge recovery drops to a low speed so an animal does not hit a pool wall at a 20-block/s burst.
+   - Mounted orcas are allowed a higher assisted cap than before, but normal Horse steering remains authoritative.
 
-3. **Food attraction must not be spoofable by an anvil rename.**
-   - `海の餌` uses a `PersistentDataContainer` marker under the plugin namespace.
-   - A renamed ordinary cod item is therefore not accepted as marine food.
-   - Players can hold it as a lure, drop it as a consumable target, or right-click a mob to feed it directly.
+3. **Autonomous jumps need preparation rather than an instantaneous upward velocity.**
+   - The new state machine is `NONE -> DIVE -> CHARGE -> AIRBORNE -> NONE`.
+   - A jump starts only near a water surface with at least two blocks of water below and a clear non-solid column above.
+   - Orcas choose a 3-10 block target; sharks use smaller 2-5 block breaches and schedule them less often.
+   - Launch height maps to a capped vertical velocity table. The 10-block entry uses 1.344 blocks/tick, selected to target approximately a 10-block apex under ordinary Minecraft entity gravity.
+   - The 10-block value is a simulation/design target, not a claim of pixel-exact live-server height under every server implementation or lag condition.
 
-4. **Food must not interfere with show control or native riding.**
-   - Show-controlled orcas ignore food completely.
-   - A ridden shark/orca remains under native mounted control.
-   - Food attraction only takes over the ordinary autonomous path when no pilot/show controller is active.
+4. **Fast jumping must not fight the other controllers.**
+   - Food attraction is not allowed to take over once a breach sequence has started.
+   - Native mounted control cancels autonomous jump state.
+   - Show control cancels autonomous jump state and retains the existing show controller.
+   - Normal autonomous intent is regenerated after water re-entry.
 
-5. **Dropped-food behavior needs a bounded and throttled search.**
-   - Each species has its own attraction range.
-   - Nearby dropped entities are searched only inside that bounded cube.
-   - Both a found target and a no-target result are cached for six ticks, so an empty area does not trigger a nearby-entity query every movement tick.
-   - Review also found that the first approach threshold could make a shark or crab slow down just outside its bite radius; the final approach threshold was reduced so dropped food can actually be reached and consumed.
+5. **One large interaction box did not match the visible bodies.**
+   - Orca now uses six `Interaction` segments along its body.
+   - Shark uses five.
+   - Crab uses three, including lateral claw coverage.
+   - Every segment is mapped to the owning `MarineMob`, so feeding, riding, and damage lookup resolve through the same custom-mob state.
+   - These are targeting/interaction hitboxes. The movement carrier deliberately remains non-collidable; solid push physics is not added because it would make large composite animals snag on pool walls and push passengers unexpectedly.
 
-6. **Show configuration should survive restart.**
-   - `set-center`, `set-facing`, schedule edits, and enable/disable write back to `config.yml` and reload the definitions.
-   - `set-center` also stores the player's current world.
-   - Time input is validated through the existing `ShowSchedule` parser and normalized to `HH:mm`.
+6. **The existing display animation must scale sensibly at higher speed.**
+   - Tail/fluke/body animation still derives from actual horizontal velocity, but its scale is bounded to avoid extreme oscillation at level 10.
+   - Existing splash, wake, breathing, food, riding, eight-seat orca, and show-music behavior remains intact.
 
-7. **The previous model detail floor still left stepped silhouettes.**
-   - The orca is generated from 17 short tapered body slices plus ventral, marking, fin, peduncle, and fluke detail, exceeding 60 display parts.
-   - The shark uses 13 tapered body slices plus ventral, gill, fin, posterior-body, peduncle, keel, and caudal detail, exceeding 50 display parts.
-   - Posterior shark body motion and orca peduncle motion are now animated separately from the final tail/fluke pieces.
-
-8. **Pure Spigot rendering still has a ceiling.**
-   - The plugin intentionally remains resource-pack-free and uses transformed vanilla `BlockDisplay` cuboids.
-   - It can improve silhouette, markings, proportions, and animation, but cannot become a smooth skinned high-poly animal without a resource-pack/model pipeline.
+7. **Pure Spigot limitations remain.**
+   - `Interaction` provides configurable width/height and records interactions, but it is not a solid collision body.
+   - BlockDisplay models remain transformed vanilla cuboids rather than skinned meshes.
 
 ## Tests
 
-The unit suite checks supported mob names, eight-seat orca behavior, the new model detail floors, reduced crab dimensions, species-specific attraction/movement parameters, 10 health, valid display scales, and the existing show schedule parser.
+The unit suite now additionally checks:
+
+- exactly ten speed levels;
+- level 10 = 20 blocks/s = 1.0 block/tick;
+- invalid speed-level rejection;
+- show-speed quantization;
+- positive hitbox dimensions for every custom mob;
+- six orca, five shark, and three crab hitbox segments.
+
+Existing mob-type and show-schedule tests remain.
 
 ## Verification boundary
 
-CI verifies source compatibility with the declared Spigot 1.21.1 API, unit tests, JAR integrity, `plugin.yml`, `config.yml`, Java 21 class version, the presence of the marine-food/show classes, and absence of shaded Bukkit classes.
+CI verifies source compatibility with the declared Spigot 1.21.1 API, unit tests, JAR integrity, `plugin.yml`, `config.yml`, Java 21 class version, speed/hitbox classes, food/show classes, and absence of shaded Bukkit classes.
 
-CI cannot prove the subjective look of movement or models. A staging server is still needed to assess food attraction around the actual aquarium geometry, crab apparent size beside players, show-center placement, eight-rider spacing, and final shark/orca appearance from all angles.
+CI does not prove live movement feel. A staging server is still required to measure real breach apex/landing position, 20-block/s behavior in the actual pool, rider stability during high-speed motion, attack targeting between adjacent hitbox segments, and any anti-cheat or server-configuration interaction.
