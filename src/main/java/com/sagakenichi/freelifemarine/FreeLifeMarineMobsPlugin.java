@@ -27,7 +27,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         mobs.start();
         shows.start();
         finalMotion.start();
-        getLogger().info("FreeLifeMarineMobs 1.9.0 enabled: final airborne fall recovery and player-facing orca riding are active.");
+        getLogger().info("FreeLifeMarineMobs 1.9.1 enabled: deterministic manual air gravity and player-facing orca riding are active.");
     }
 
     @Override
