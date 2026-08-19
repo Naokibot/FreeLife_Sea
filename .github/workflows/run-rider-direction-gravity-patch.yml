@@ -1,0 +1,33 @@
+name: Run 1.9.0 integration patch
+
+on:
+  push:
+    branches: [ feature/rider-direction-air-gravity-1.9.0 ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/rider-direction-air-gravity-1.9.0
+      - name: Execute integration script
+        shell: python
+        run: |
+          from pathlib import Path
+          workflow = Path('.github/workflows/apply-rider-direction-gravity-1-9-0.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if line.strip() == 'run: |') + 1
+          end = next(i for i in range(start, len(workflow)) if workflow[i].startswith('      - name: Commit patched sources'))
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in workflow[start:end])
+          exec(compile(script, 'integration-patch', 'exec'))
+      - name: Commit patched sources
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add .github/workflows/build.yml pom.xml README.md REVIEW.md src
+          git commit -m 'Fix airborne hovering and add player-look orca control'
+          git push origin HEAD:feature/rider-direction-air-gravity-1.9.0
