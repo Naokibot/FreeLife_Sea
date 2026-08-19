@@ -33,6 +33,7 @@ jobs:
         run: |
           git config user.name 'Hotaru(Naokibot)'
           git config user.email 'sagakatsuyuki.555@gmail.com'
-          git add src pom.xml .github/workflows/build.yml
+          git restore .github/workflows/build.yml
+          git add src pom.xml
           git commit -m 'Make autonomous swimming more active and harden show startup'
           git push origin HEAD:feature/active-autonomy-show-fallback-1.8
