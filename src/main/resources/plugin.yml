@@ -1,0 +1,15 @@
+name: FreeLifeMarineMobs
+version: '1.0.0'
+main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
+api-version: '1.21'
+author: Naokibot
+description: Command-only rideable shark and orca mobs rendered with vanilla display entities.
+commands:
+  marine:
+    description: Spawn a FreeLife marine mob.
+    usage: /marine spawn <shark|orca>
+    permission: freelifemarine.spawn
+permissions:
+  freelifemarine.spawn:
+    description: Allows spawning shark and orca mobs.
+    default: op
