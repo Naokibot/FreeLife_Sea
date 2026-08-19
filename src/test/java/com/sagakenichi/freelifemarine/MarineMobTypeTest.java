@@ -28,10 +28,21 @@ class MarineMobTypeTest {
     }
 
     @Test
-    void refinedModelsMeetHigherDetailFloor() {
-        assertTrue(MarineMobType.ORCA.parts().size() >= 48);
-        assertTrue(MarineMobType.SHARK.parts().size() >= 39);
+    void modelsMeetNewDetailAndCrabScaleFloors() {
+        assertTrue(MarineMobType.ORCA.parts().size() >= 60);
+        assertTrue(MarineMobType.SHARK.parts().size() >= 50);
         assertTrue(MarineMobType.CRAB.parts().size() >= 16);
+        assertTrue(MarineMobType.CRAB.interactionWidth() <= 1.35F);
+        assertTrue(MarineMobType.CRAB.interactionHeight() <= 0.72F);
+        assertTrue(MarineMobType.CRAB.parts().stream().allMatch(part -> part.scaleX() <= 1.0F));
+    }
+
+    @Test
+    void speciesHaveDifferentAutonomousMovementProfiles() {
+        assertTrue(MarineMobType.ORCA.foodAttractionRange() > MarineMobType.SHARK.foodAttractionRange());
+        assertTrue(MarineMobType.SHARK.foodAttractionRange() > MarineMobType.CRAB.foodAttractionRange());
+        assertTrue(MarineMobType.ORCA.autonomousAcceleration() > MarineMobType.SHARK.autonomousAcceleration());
+        assertTrue(MarineMobType.CRAB.cruiseSpeed() < MarineMobType.SHARK.cruiseSpeed());
     }
 
     @Test

@@ -14,6 +14,7 @@ import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Horse;
 import org.bukkit.entity.Interaction;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Slime;
@@ -26,6 +27,7 @@ import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -40,12 +42,14 @@ public final class MarineMobService {
     private static final double MAX_SEAT_SPEED = 1.45;
 
     private final JavaPlugin plugin;
+    private final MarineFood food;
     private final Map<UUID, MarineMob> byAnchor = new HashMap<>();
     private final Map<UUID, MarineMob> byEntity = new HashMap<>();
     private BukkitTask movementTask;
 
-    public MarineMobService(JavaPlugin plugin) {
+    public MarineMobService(JavaPlugin plugin, MarineFood food) {
         this.plugin = plugin;
+        this.food = food;
     }
 
     public void start() {
@@ -58,9 +62,9 @@ public final class MarineMobService {
         if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
             horizontal = forwardFromYaw(origin.getYaw());
         }
-        horizontal.normalize().multiply(3.0);
+        horizontal.normalize().multiply(type == MarineMobType.CRAB ? 1.6 : 3.0);
 
-        double verticalOffset = type == MarineMobType.CRAB ? 0.15 : 0.40;
+        double verticalOffset = type == MarineMobType.CRAB ? 0.08 : 0.40;
         Location spawn = origin.clone().add(horizontal).add(0.0, verticalOffset, 0.0);
         World world = spawn.getWorld();
         if (world == null) {
@@ -86,11 +90,12 @@ public final class MarineMobService {
                 passengerSeats,
                 type.maxHealth(),
                 origin.getYaw(),
-                randomTicks(90, 180),
+                randomTicks(100, 220),
                 ThreadLocalRandom.current().nextBoolean() ? 1 : -1,
-                randomTicks(150, 250)
+                randomTicks(160, 280)
         );
         mob.wasInWater = isWaterContact(spawn);
+        refreshNaturalIntent(mob);
 
         byAnchor.put(anchor.getUniqueId(), mob);
         byEntity.put(anchor.getUniqueId(), mob);
@@ -101,7 +106,7 @@ public final class MarineMobService {
     }
 
     public MarineMob find(Entity entity) {
-        return byEntity.get(entity.getUniqueId());
+        return entity == null ? null : byEntity.get(entity.getUniqueId());
     }
 
     public boolean damage(Entity entity, double amount) {
@@ -113,6 +118,25 @@ public final class MarineMobService {
         if (mob.health <= 0.0) {
             remove(mob);
         }
+        return true;
+    }
+
+    public boolean feed(Player player, Entity clicked) {
+        MarineMob mob = find(clicked);
+        if (mob == null || mob.showControlled || !food.isHeldBy(player)) {
+            return false;
+        }
+        if (!food.consumeOne(player)) {
+            return false;
+        }
+        mob.health = Math.min(mob.type.maxHealth(), mob.health + 2.0);
+        Location location = mob.anchor.getLocation().add(0.0, mob.type == MarineMobType.CRAB ? 0.45 : 1.4, 0.0);
+        World world = mob.anchor.getWorld();
+        world.spawnParticle(Particle.HEART, location, 5, 0.35, 0.25, 0.35, 0.02);
+        world.spawnParticle(Particle.BUBBLE, location, 7, 0.30, 0.25, 0.30, 0.04);
+        world.playSound(mob.anchor.getLocation(), Sound.ENTITY_GENERIC_EAT, 0.9F, 1.05F);
+        player.sendMessage("§b" + mob.type.displayName() + " に海の餌をあげました。§f 体力: "
+                + (int) Math.ceil(mob.health) + "/" + (int) mob.type.maxHealth());
         return true;
     }
 
@@ -161,7 +185,8 @@ public final class MarineMobService {
     }
 
     public boolean isUsable(MarineMob mob) {
-        return mob != null && mob.anchor.isValid() && !mob.anchor.isDead() && byAnchor.containsKey(mob.anchor.getUniqueId());
+        return mob != null && mob.anchor.isValid() && !mob.anchor.isDead()
+                && byAnchor.containsKey(mob.anchor.getUniqueId());
     }
 
     public void beginShowControl(MarineMob mob) {
@@ -176,6 +201,7 @@ public final class MarineMobService {
         }
         mob.showControlled = true;
         mob.cachedWaterDirection = null;
+        mob.foodTarget = null;
         mob.anchor.setGravity(false);
         mob.anchor.setVelocity(new Vector());
         if (mob.anchor instanceof Horse horse) {
@@ -189,8 +215,9 @@ public final class MarineMobService {
         }
         mob.showControlled = false;
         mob.targetYaw = mob.anchor.getLocation().getYaw();
-        mob.turnTicks = randomTicks(80, 170);
+        mob.behaviorTicks = randomTicks(80, 170);
         mob.anchor.setGravity(!isWaterContact(mob.anchor.getLocation()));
+        refreshNaturalIntent(mob);
         if (mob.anchor instanceof Horse horse) {
             horse.setAI(false);
         }
@@ -306,10 +333,12 @@ public final class MarineMobService {
                     if (pilot != null) {
                         moveWithNativeRider(mob, inWater);
                     } else {
-                        moveAquaticAutonomously(mob, inWater);
+                        Location foodTarget = scanFoodTarget(mob);
+                        moveAquaticAutonomously(mob, inWater, foodTarget);
                     }
                 } else {
-                    moveCrab(mob, inWater);
+                    Location foodTarget = scanFoodTarget(mob);
+                    moveCrab(mob, inWater, foodTarget);
                 }
             }
 
@@ -321,9 +350,63 @@ public final class MarineMobService {
         }
     }
 
+    private Location scanFoodTarget(MarineMob mob) {
+        if (mob.ageTicks < mob.nextFoodScanTick && mob.foodTarget != null) {
+            return mob.foodTarget.clone();
+        }
+        mob.nextFoodScanTick = mob.ageTicks + 4L;
+        Location origin = mob.anchor.getLocation();
+        World world = origin.getWorld();
+        double range = mob.type.foodAttractionRange();
+        double bestScore = range * range + 1.0;
+        Location best = null;
+        Item bestItem = null;
+
+        for (Player player : world.getPlayers()) {
+            if (!food.isHeldBy(player)) {
+                continue;
+            }
+            double distance = player.getLocation().distanceSquared(origin);
+            if (distance <= range * range && distance < bestScore) {
+                bestScore = distance;
+                best = player.getLocation().clone();
+                bestItem = null;
+            }
+        }
+
+        Collection<Entity> nearby = world.getNearbyEntities(origin, range, range, range);
+        for (Entity entity : nearby) {
+            if (!(entity instanceof Item item) || !item.isValid() || !food.isMarineFood(item.getItemStack())) {
+                continue;
+            }
+            double distance = item.getLocation().distanceSquared(origin);
+            double score = distance * 0.78;
+            if (score < bestScore) {
+                bestScore = score;
+                best = item.getLocation().clone();
+                bestItem = item;
+            }
+        }
+
+        if (bestItem != null) {
+            double bite = mob.type == MarineMobType.CRAB ? 0.70 : mob.type == MarineMobType.SHARK ? 1.20 : 1.55;
+            if (bestItem.getLocation().distanceSquared(origin) <= bite * bite && food.consumeOne(bestItem)) {
+                Location mouth = origin.clone().add(0.0, mob.type == MarineMobType.CRAB ? 0.30 : 0.75, 0.0);
+                world.spawnParticle(Particle.BUBBLE, mouth, mob.type == MarineMobType.CRAB ? 5 : 12,
+                        0.28, 0.22, 0.28, 0.04);
+                world.playSound(origin, Sound.ENTITY_GENERIC_EAT, 0.75F, mob.type == MarineMobType.ORCA ? 0.82F : 1.08F);
+                mob.foodTarget = null;
+                mob.behaviorTicks = 12;
+                return null;
+            }
+        }
+
+        mob.foodTarget = best == null ? null : best.clone();
+        return best;
+    }
+
     private void moveWithNativeRider(MarineMob mob, boolean inWater) {
         mob.anchor.setGravity(true);
-
         Vector velocity = mob.anchor.getVelocity();
         double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
         if (horizontalSpeed > mob.type.rideSpeed()) {
@@ -347,86 +430,186 @@ public final class MarineMobService {
         }
     }
 
-    private void moveAquaticAutonomously(MarineMob mob, boolean inWater) {
+    private void moveAquaticAutonomously(MarineMob mob, boolean inWater, Location foodTarget) {
         Location location = mob.anchor.getLocation();
         mob.anchor.setGravity(!inWater);
 
         if (!inWater) {
-            if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {
-                mob.cachedWaterDirection = findNearbyWaterDirection(location, 6);
-            }
-            Vector towardWater = mob.cachedWaterDirection;
-            if (towardWater != null && towardWater.lengthSquared() > DIRECTION_EPSILON) {
-                Vector horizontal = towardWater.clone().setY(0.0).normalize();
-                float targetYaw = yawFromVector(horizontal);
-                float yaw = turnTowards(location.getYaw(), targetYaw, 4.0F);
-                mob.anchor.setRotation(yaw, 0.0F);
-                Vector velocity = horizontal.multiply(mob.type.cruiseSpeed() * 0.48);
-                velocity.setY(isSolidBelow(location) && mob.ageTicks % 12L == 0L ? 0.13 : -0.08);
-                mob.anchor.setVelocity(velocity);
-            } else {
-                Vector velocity = mob.anchor.getVelocity().multiply(0.45);
-                velocity.setY(isSolidBelow(location) ? 0.0 : -0.08);
-                mob.anchor.setVelocity(velocity);
-            }
+            returnToWater(mob, location);
             return;
         }
 
         mob.cachedWaterDirection = null;
-        mob.turnTicks--;
+        if (foodTarget != null) {
+            steerTowardFood(mob, location, foodTarget);
+            return;
+        }
+
+        mob.behaviorTicks--;
         Vector currentForward = forwardFromYaw(location.getYaw());
-        Location ahead = location.clone().add(currentForward.clone().multiply(1.8));
-        boolean waterAhead = isWaterAt(ahead) || isWaterAt(ahead.clone().add(0.0, -0.7, 0.0));
-        if (mob.turnTicks <= 0 || !waterAhead) {
-            double turn = waterAhead
-                    ? ThreadLocalRandom.current().nextDouble(-55.0, 55.0)
-                    : ThreadLocalRandom.current().nextDouble(100.0, 220.0);
-            mob.targetYaw = normalizeYaw((float) (location.getYaw() + turn));
-            mob.turnTicks = randomTicks(80, 170);
+        Location ahead = location.clone().add(currentForward.clone().multiply(mob.type == MarineMobType.SHARK ? 2.4 : 2.0));
+        boolean waterAhead = isWaterAt(ahead) || isWaterAt(ahead.clone().add(0.0, -0.75, 0.0));
+        if (mob.behaviorTicks <= 0) {
+            refreshNaturalIntent(mob);
+        }
+        if (!waterAhead) {
+            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(120.0, 235.0)));
+            mob.behaviorTicks = randomTicks(45, 90);
         }
 
-        float yaw = turnTowards(location.getYaw(), mob.targetYaw, 1.6F);
-        Vector forward = forwardFromYaw(yaw);
-        double vertical = Math.sin(mob.ageTicks * 0.055) * 0.018;
-        if (isNearSurface(location)) {
-            vertical -= 0.018;
+        if (mob.type == MarineMobType.ORCA && mob.ageTicks + 45L >= mob.nextBreathTick) {
+            mob.verticalIntent = 0.050;
+            mob.cruiseFactor = Math.max(mob.cruiseFactor, 0.82);
+        } else if (mob.type == MarineMobType.SHARK && isNearSurface(location)) {
+            mob.verticalIntent = Math.min(mob.verticalIntent, -0.020);
         }
-        if (!isWaterAt(location.clone().add(0.0, -0.75, 0.0))) {
-            vertical += 0.032;
+        if (!isWaterAt(location.clone().add(0.0, -0.85, 0.0))) {
+            mob.verticalIntent = Math.max(mob.verticalIntent, 0.030);
+        }
+        if (!isWaterAt(location.clone().add(0.0, 1.15, 0.0)) && mob.verticalIntent > 0.0
+                && mob.type != MarineMobType.ORCA) {
+            mob.verticalIntent = -0.012;
         }
 
-        Vector velocity = forward.multiply(mob.type.cruiseSpeed()).setY(vertical);
+        float yaw = turnTowards(location.getYaw(), mob.targetYaw, mob.type.autonomousTurnRate());
+        Vector desired = forwardFromYaw(yaw).multiply(mob.type.cruiseSpeed() * mob.cruiseFactor);
+        desired.setY(mob.verticalIntent + Math.sin(mob.ageTicks * (mob.type == MarineMobType.ORCA ? 0.035 : 0.025)) * 0.006);
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration());
         mob.anchor.setVelocity(velocity);
-        mob.anchor.setRotation(yaw, (float) clamp(-vertical * 120.0, -8.0, 8.0));
+        mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -11.0, 11.0));
     }
 
-    private void moveCrab(MarineMob mob, boolean inWater) {
-        mob.anchor.setGravity(true);
+    private void refreshNaturalIntent(MarineMob mob) {
         Location location = mob.anchor.getLocation();
-        mob.turnTicks--;
-        if (mob.turnTicks <= 0) {
-            mob.targetYaw = normalizeYaw((float) (location.getYaw()
-                    + ThreadLocalRandom.current().nextDouble(-35.0, 35.0)));
-            if (ThreadLocalRandom.current().nextDouble() < 0.45) {
-                mob.sideDirection *= -1;
-            }
-            mob.turnTicks = randomTicks(75, 155);
+        if (mob.type == MarineMobType.ORCA) {
+            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-38.0, 38.0)));
+            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.56, 1.08);
+            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.020, 0.020);
+            mob.behaviorTicks = randomTicks(95, 220);
+        } else if (mob.type == MarineMobType.SHARK) {
+            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-24.0, 24.0)));
+            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.82, 1.08);
+            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.012, 0.012);
+            mob.behaviorTicks = randomTicks(130, 270);
+        } else {
+            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-30.0, 30.0)));
+            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.65, 1.0);
+            mob.behaviorTicks = randomTicks(70, 150);
+        }
+    }
+
+    private void steerTowardFood(MarineMob mob, Location location, Location target) {
+        Vector delta = target.toVector().subtract(location.toVector());
+        double horizontalDistance = Math.hypot(delta.getX(), delta.getZ());
+        if (horizontalDistance < 1.8) {
+            Vector coast = mob.anchor.getVelocity().multiply(0.88);
+            coast.setY(coast.getY() * 0.60);
+            mob.anchor.setVelocity(coast);
+            return;
         }
 
-        float yaw = turnTowards(location.getYaw(), mob.targetYaw, 1.2F);
+        Vector horizontal = delta.clone().setY(0.0);
+        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
+            horizontal = forwardFromYaw(location.getYaw());
+        } else {
+            horizontal.normalize();
+        }
+        float targetYaw = yawFromVector(horizontal);
+        float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.45F);
+        double speed = mob.type.cruiseSpeed() * (mob.type == MarineMobType.ORCA ? 1.22 : 1.15);
+
+        boolean targetInWater = isWaterAt(target) || isWaterAt(target.clone().add(0.0, -0.7, 0.0));
+        double vertical = targetInWater ? clamp(delta.getY() * 0.08, -0.055, 0.055) : 0.0;
+        if (!isWaterAt(location.clone().add(forwardFromYaw(yaw).multiply(1.6)))) {
+            speed *= 0.35;
+            vertical = Math.min(vertical, 0.0);
+        }
+
+        Vector desired = forwardFromYaw(yaw).multiply(speed).setY(vertical);
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration() * 1.35);
+        mob.anchor.setVelocity(velocity);
+        mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -12.0, 12.0));
+    }
+
+    private void returnToWater(MarineMob mob, Location location) {
+        if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {
+            mob.cachedWaterDirection = findNearbyWaterDirection(location, 7);
+        }
+        Vector towardWater = mob.cachedWaterDirection;
+        if (towardWater != null && towardWater.lengthSquared() > DIRECTION_EPSILON) {
+            Vector horizontal = towardWater.clone().setY(0.0).normalize();
+            float targetYaw = yawFromVector(horizontal);
+            float yaw = turnTowards(location.getYaw(), targetYaw, 3.2F);
+            mob.anchor.setRotation(yaw, 0.0F);
+            Vector velocity = horizontal.multiply(mob.type.cruiseSpeed() * 0.42);
+            velocity.setY(isSolidBelow(location) && mob.ageTicks % 14L == 0L ? 0.11 : -0.08);
+            mob.anchor.setVelocity(velocity);
+        } else {
+            Vector velocity = mob.anchor.getVelocity().multiply(0.42);
+            velocity.setY(isSolidBelow(location) ? 0.0 : -0.08);
+            mob.anchor.setVelocity(velocity);
+        }
+    }
+
+    private void moveCrab(MarineMob mob, boolean inWater, Location foodTarget) {
+        mob.anchor.setGravity(true);
+        Location location = mob.anchor.getLocation();
+
+        if (foodTarget != null) {
+            Vector toward = foodTarget.toVector().subtract(location.toVector()).setY(0.0);
+            if (toward.lengthSquared() > 0.30) {
+                toward.normalize();
+                float travelYaw = yawFromVector(toward);
+                float bodyTarget = normalizeYaw(travelYaw + (mob.sideDirection > 0 ? -90.0F : 90.0F));
+                mob.targetYaw = bodyTarget;
+                mob.pauseTicks = 0;
+            }
+        } else {
+            if (mob.pauseTicks > 0) {
+                mob.pauseTicks--;
+                Vector coast = mob.anchor.getVelocity().multiply(0.35);
+                coast.setY(isSolidBelow(location) ? 0.0 : -0.10);
+                mob.anchor.setVelocity(coast);
+                return;
+            }
+            mob.behaviorTicks--;
+            if (mob.behaviorTicks <= 0) {
+                mob.targetYaw = normalizeYaw((float) (location.getYaw()
+                        + ThreadLocalRandom.current().nextDouble(-32.0, 32.0)));
+                if (ThreadLocalRandom.current().nextDouble() < 0.35) {
+                    mob.sideDirection *= -1;
+                }
+                if (ThreadLocalRandom.current().nextDouble() < 0.30) {
+                    mob.pauseTicks = randomTicks(18, 52);
+                }
+                mob.behaviorTicks = randomTicks(65, 145);
+                mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.65, 1.0);
+            }
+        }
+
+        float yaw = turnTowards(location.getYaw(), mob.targetYaw, mob.type.autonomousTurnRate());
         Vector forward = forwardFromYaw(yaw);
         Vector side = new Vector(forward.getZ(), 0.0, -forward.getX()).multiply(mob.sideDirection);
-        Location next = location.clone().add(side.clone().multiply(0.75));
+        Location next = location.clone().add(side.clone().multiply(0.50));
         if (next.getBlock().getType().isSolid()) {
             mob.sideDirection *= -1;
             side.multiply(-1.0);
         }
 
-        double speed = inWater ? mob.type.cruiseSpeed() * 0.72 : mob.type.cruiseSpeed();
-        Vector velocity = side.normalize().multiply(speed);
-        velocity.setY(inWater ? Math.sin(mob.ageTicks * 0.10) * 0.008 : (isSolidBelow(location) ? 0.0 : -0.11));
+        double speed = mob.type.cruiseSpeed() * mob.cruiseFactor * (inWater ? 0.78 : 1.0);
+        if (foodTarget != null) {
+            speed *= 1.15;
+        }
+        Vector desired = side.normalize().multiply(speed);
+        desired.setY(inWater ? Math.sin(mob.ageTicks * 0.08) * 0.004 : (isSolidBelow(location) ? 0.0 : -0.10));
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration());
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, 0.0F);
+    }
+
+    private static Vector blendVelocity(Vector current, Vector desired, double factor) {
+        double t = clamp(factor, 0.01, 1.0);
+        return current.clone().multiply(1.0 - t).add(desired.clone().multiply(t));
     }
 
     private void handleWaterTransition(MarineMob mob, boolean inWater) {
@@ -443,16 +626,17 @@ public final class MarineMobService {
         int splashCount = switch (mob.type) {
             case ORCA -> 72;
             case SHARK -> 38;
-            case CRAB -> 16;
+            case CRAB -> 7;
         };
-        double spread = mob.type == MarineMobType.ORCA ? 1.85 : mob.type == MarineMobType.SHARK ? 1.0 : 0.45;
-        world.spawnParticle(Particle.SPLASH, location, splashCount, spread, 0.60, spread, 0.18);
+        double spread = mob.type == MarineMobType.ORCA ? 1.85 : mob.type == MarineMobType.SHARK ? 1.0 : 0.20;
+        world.spawnParticle(Particle.SPLASH, location, splashCount, spread, mob.type == MarineMobType.CRAB ? 0.18 : 0.60,
+                spread, mob.type == MarineMobType.CRAB ? 0.05 : 0.18);
         if (inWater) {
-            world.spawnParticle(Particle.BUBBLE, location, Math.max(6, splashCount / 3), spread * 0.7, 0.45, spread * 0.7, 0.08);
+            world.spawnParticle(Particle.BUBBLE, location, Math.max(3, splashCount / 3), spread * 0.7, 0.30, spread * 0.7, 0.06);
         }
         world.playSound(location, Sound.ENTITY_GENERIC_SPLASH,
-                mob.type == MarineMobType.ORCA ? 1.55F : 0.9F,
-                mob.type == MarineMobType.CRAB ? 1.35F : 0.85F);
+                mob.type == MarineMobType.ORCA ? 1.55F : mob.type == MarineMobType.SHARK ? 0.9F : 0.32F,
+                mob.type == MarineMobType.CRAB ? 1.45F : 0.85F);
     }
 
     private void emitWakeAndBreath(MarineMob mob, boolean inWater) {
@@ -469,9 +653,10 @@ public final class MarineMobService {
         double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
         if (horizontalSpeed > 0.08 && isNearSurface(base) && mob.ageTicks % 5L == 0L) {
             Vector forward = forwardFromYaw(base.getYaw());
-            Location wake = base.clone().subtract(forward.multiply(mob.type == MarineMobType.ORCA ? 3.8 : 2.2));
-            int count = mob.type == MarineMobType.ORCA ? 14 : mob.type == MarineMobType.SHARK ? 7 : 3;
-            world.spawnParticle(Particle.SPLASH, wake, count, 0.62, 0.20, 0.62, 0.06);
+            Location wake = base.clone().subtract(forward.multiply(mob.type == MarineMobType.ORCA ? 3.8 : mob.type == MarineMobType.SHARK ? 2.2 : 0.4));
+            int count = mob.type == MarineMobType.ORCA ? 14 : mob.type == MarineMobType.SHARK ? 7 : 2;
+            world.spawnParticle(Particle.SPLASH, wake, count, mob.type == MarineMobType.CRAB ? 0.12 : 0.62,
+                    0.20, mob.type == MarineMobType.CRAB ? 0.12 : 0.62, 0.05);
         }
 
         if (mob.type == MarineMobType.ORCA && isNearSurface(base) && mob.ageTicks >= mob.nextBreathTick) {
@@ -479,13 +664,17 @@ public final class MarineMobService {
             Location blowhole = base.clone().add(forward.multiply(2.0)).add(0.0, 2.15, 0.0);
             world.spawnParticle(Particle.CLOUD, blowhole, 16, 0.25, 0.60, 0.25, 0.025);
             world.spawnParticle(Particle.SPLASH, blowhole, 9, 0.30, 0.25, 0.30, 0.05);
-            mob.nextBreathTick = mob.ageTicks + randomTicks(150, 260);
+            mob.nextBreathTick = mob.ageTicks + randomTicks(180, 320);
+            if (!mob.showControlled) {
+                mob.verticalIntent = -0.018;
+                mob.behaviorTicks = Math.min(mob.behaviorTicks, 55);
+            }
         }
     }
 
     private void updateFollowers(MarineMob mob) {
         Location base = mob.anchor.getLocation();
-        mob.interaction.teleport(base.clone().add(0.0, 0.15, 0.0));
+        mob.interaction.teleport(base.clone().add(0.0, mob.type == MarineMobType.CRAB ? 0.02 : 0.15, 0.0));
         mob.interaction.setRotation(base.getYaw(), 0.0F);
 
         List<MarineMobType.SeatOffset> offsets = mob.type.seats();
@@ -519,7 +708,7 @@ public final class MarineMobService {
                 ? (float) clamp(-verticalVelocity * 38.0, -16.0, 16.0)
                 : 0.0F;
         double horizontalSpeed = Math.hypot(mob.anchor.getVelocity().getX(), mob.anchor.getVelocity().getZ());
-        double motionScale = clamp(horizontalSpeed / Math.max(0.08, mob.type.cruiseSpeed()), 0.18, 1.35);
+        double motionScale = clamp(horizontalSpeed / Math.max(0.06, mob.type.cruiseSpeed()), 0.12, 1.42);
         List<MarineMobType.ModelPart> parts = mob.type.parts();
 
         for (int index = 0; index < parts.size(); index++) {
@@ -531,9 +720,11 @@ public final class MarineMobService {
             double right = part.right();
 
             switch (part.animation()) {
+                case SHARK_BODY -> right += wave * 0.10;
                 case SHARK_TAIL -> right += wave * 0.22;
+                case ORCA_PEDUNCLE -> up += wave * 0.07;
                 case ORCA_FLUKE -> up += wave * 0.14;
-                case CRAB_LEG_A, CRAB_LEG_B -> up += Math.abs(wave) * 0.055;
+                case CRAB_LEG_A, CRAB_LEG_B -> up += Math.abs(wave) * 0.025;
                 case STATIC -> { }
             }
 
@@ -546,19 +737,23 @@ public final class MarineMobService {
 
     private static double animationWave(long ageTicks, MarineMobType.ModelPart part) {
         return switch (part.animation()) {
+            case SHARK_BODY -> Math.sin(ageTicks * 0.34 + part.phase());
             case SHARK_TAIL -> Math.sin(ageTicks * 0.42 + part.phase());
+            case ORCA_PEDUNCLE -> Math.sin(ageTicks * 0.27 + part.phase());
             case ORCA_FLUKE -> Math.sin(ageTicks * 0.30 + part.phase());
-            case CRAB_LEG_A -> Math.sin(ageTicks * 0.55 + part.phase());
-            case CRAB_LEG_B -> -Math.sin(ageTicks * 0.55 + part.phase());
+            case CRAB_LEG_A -> Math.sin(ageTicks * 0.50 + part.phase());
+            case CRAB_LEG_B -> -Math.sin(ageTicks * 0.50 + part.phase());
             case STATIC -> 0.0;
         };
     }
 
     private static Transformation transformation(MarineMobType.ModelPart part, double wave) {
         float dynamicDegrees = switch (part.animation()) {
+            case SHARK_BODY -> (float) (wave * 8.0);
             case SHARK_TAIL -> (float) (wave * 28.0);
+            case ORCA_PEDUNCLE -> (float) (wave * 7.0);
             case ORCA_FLUKE -> (float) (wave * 20.0);
-            case CRAB_LEG_A, CRAB_LEG_B -> (float) (wave * 18.0);
+            case CRAB_LEG_A, CRAB_LEG_B -> (float) (wave * 15.0);
             case STATIC -> 0.0F;
         };
         AxisAngle4f rotation = rotation(part.rotationAxis(), part.baseDegrees() + dynamicDegrees);
@@ -784,16 +979,21 @@ public final class MarineMobService {
         private double health;
         private long ageTicks;
         private float targetYaw;
-        private int turnTicks;
+        private int behaviorTicks;
         private int sideDirection;
         private long nextBreathTick;
         private boolean wasInWater;
         private boolean showControlled;
         private Vector cachedWaterDirection;
+        private double cruiseFactor = 1.0;
+        private double verticalIntent;
+        private int pauseTicks;
+        private long nextFoodScanTick;
+        private Location foodTarget;
 
         private MarineMob(MarineMobType type, LivingEntity anchor, Interaction interaction,
                           List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
-                          double health, float targetYaw, int turnTicks,
+                          double health, float targetYaw, int behaviorTicks,
                           int sideDirection, long nextBreathTick) {
             this.type = type;
             this.anchor = anchor;
@@ -802,7 +1002,7 @@ public final class MarineMobService {
             this.passengerSeats = List.copyOf(passengerSeats);
             this.health = health;
             this.targetYaw = targetYaw;
-            this.turnTicks = turnTicks;
+            this.behaviorTicks = behaviorTicks;
             this.sideDirection = sideDirection;
             this.nextBreathTick = nextBreathTick;
         }

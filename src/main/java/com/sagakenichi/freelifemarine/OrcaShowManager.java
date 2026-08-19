@@ -15,6 +15,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -26,6 +27,7 @@ import java.util.Set;
 public final class OrcaShowManager {
 
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Tokyo");
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm");
     private static final int SHOW_END_TICK = 760;
     private static final float[] MELODY = {
             1.000F, 1.122F, 1.260F, 1.335F,
@@ -84,15 +86,107 @@ public final class OrcaShowManager {
         return List.copyOf(definitions.keySet());
     }
 
+    public String setCenter(Player player, String requestedId) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        Location location = player.getLocation();
+        String path = path(definition.id);
+        plugin.getConfig().set(path + ".world", location.getWorld().getName());
+        plugin.getConfig().set(path + ".center.x", roundCoordinate(location.getX()));
+        plugin.getConfig().set(path + ".center.y", roundCoordinate(location.getY()));
+        plugin.getConfig().set(path + ".center.z", roundCoordinate(location.getZ()));
+        plugin.saveConfig();
+        reload();
+        return "Show '" + definition.id + "' center set to " + location.getWorld().getName() + " "
+                + trim(roundCoordinate(location.getX())) + ", " + trim(roundCoordinate(location.getY())) + ", "
+                + trim(roundCoordinate(location.getZ())) + ".";
+    }
+
+    public String setFacing(Player player, String requestedId) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        float yaw = normalizeYaw(player.getLocation().getYaw());
+        plugin.getConfig().set(path(definition.id) + ".heading-yaw", yaw);
+        plugin.saveConfig();
+        reload();
+        return "Show '" + definition.id + "' heading set to yaw " + String.format(Locale.ROOT, "%.1f", yaw) + ".";
+    }
+
+    public String setSingleTime(String requestedId, String rawTime) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        LocalTime time = ShowSchedule.parseTime(rawTime);
+        if (time == null) {
+            return "Invalid time. Use HH:mm, for example 15:30.";
+        }
+        plugin.getConfig().set(path(definition.id) + ".times", List.of(CLOCK.format(time)));
+        plugin.saveConfig();
+        reload();
+        return "Show '" + definition.id + "' time set to " + CLOCK.format(time) + ".";
+    }
+
+    public String addTime(String requestedId, String rawTime) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        LocalTime time = ShowSchedule.parseTime(rawTime);
+        if (time == null) {
+            return "Invalid time. Use HH:mm, for example 15:30.";
+        }
+        String configPath = path(definition.id) + ".times";
+        List<String> values = new ArrayList<>(plugin.getConfig().getStringList(configPath));
+        values.add(CLOCK.format(time));
+        plugin.getConfig().set(configPath, ShowSchedule.parseTimes(values).stream().map(CLOCK::format).toList());
+        plugin.saveConfig();
+        reload();
+        return "Added " + CLOCK.format(time) + " to show '" + definition.id + "'.";
+    }
+
+    public String removeTime(String requestedId, String rawTime) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        LocalTime time = ShowSchedule.parseTime(rawTime);
+        if (time == null) {
+            return "Invalid time. Use HH:mm, for example 15:30.";
+        }
+        String configPath = path(definition.id) + ".times";
+        List<LocalTime> times = new ArrayList<>(ShowSchedule.parseTimes(plugin.getConfig().getStringList(configPath)));
+        boolean removed = times.remove(time);
+        plugin.getConfig().set(configPath, times.stream().map(CLOCK::format).toList());
+        plugin.saveConfig();
+        reload();
+        return removed
+                ? "Removed " + CLOCK.format(time) + " from show '" + definition.id + "'."
+                : "Show '" + definition.id + "' did not contain " + CLOCK.format(time) + ".";
+    }
+
+    public String setEnabled(String requestedId, boolean enabled) {
+        ShowDefinition definition = findDefinition(requestedId);
+        if (definition == null) {
+            return unknownShow();
+        }
+        plugin.getConfig().set(path(definition.id) + ".enabled", enabled);
+        plugin.saveConfig();
+        reload();
+        return "Show '" + definition.id + "' scheduled execution is now " + (enabled ? "enabled" : "disabled") + ".";
+    }
+
     public String startShow(String requestedId) {
         if (active != null) {
             return "A show is already running: " + active.definition.id + ".";
         }
         ShowDefinition definition = findDefinition(requestedId);
         if (definition == null) {
-            return definitions.isEmpty()
-                    ? "No shows are configured."
-                    : "Unknown show. Available: " + String.join(", ", definitions.keySet());
+            return unknownShow();
         }
         World world = Bukkit.getWorld(definition.worldName);
         if (world == null) {
@@ -333,6 +427,12 @@ public final class OrcaShowManager {
         return definitions.get(requestedId.toLowerCase(Locale.ROOT));
     }
 
+    private String unknownShow() {
+        return definitions.isEmpty()
+                ? "No shows are configured."
+                : "Unknown show. Available: " + String.join(", ", definitions.keySet());
+    }
+
     private ShowDefinition readDefinition(String id, ConfigurationSection section) {
         String configuredZone = section.getString("time-zone");
         ZoneId zone = ShowSchedule.parseZone(configuredZone, DEFAULT_ZONE);
@@ -375,6 +475,21 @@ public final class OrcaShowManager {
                 musicEnabled,
                 musicVolume
         );
+    }
+
+    private static String path(String id) {
+        return "shows." + id;
+    }
+
+    private static double roundCoordinate(double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    private static float normalizeYaw(float yaw) {
+        float normalized = yaw % 360.0F;
+        if (normalized > 180.0F) normalized -= 360.0F;
+        if (normalized <= -180.0F) normalized += 360.0F;
+        return normalized;
     }
 
     private static double formationOffset(int index, int count, double spacing) {
