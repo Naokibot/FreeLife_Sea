@@ -1,0 +1,246 @@
+name: Apply rider direction and gravity fix 1.9.0
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'feature/rider-direction-air-gravity-1.9.0' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/rider-direction-air-gravity-1.9.0
+      - name: Apply 1.9.0 changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def one(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          service_path = Path('src/main/java/com/sagakenichi/freelifemarine/MarineMobService.java')
+          service = service_path.read_text(encoding='utf-8')
+
+          service = one(service,
+              '    private static final double MAX_SEAT_SPEED = 1.45;',
+              '    private static final double MAX_SEAT_SPEED = 3.60;',
+              'seat speed cap')
+
+          old_tick = '''            if (mob.showControlled) {
+                if (mob.anchor instanceof Horse horse) {
+                    horse.setAI(false);
+                }
+            } else {
+                Player pilot = nativePilot(mob.anchor);
+                if (mob.anchor instanceof Horse horse) {
+                    horse.setAI(pilot != null);
+                }
+                if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
+                    if (pilot != null) {
+                        mob.jumpPhase = AutonomousJumpPhase.NONE;
+                        moveWithNativeRider(mob, inWater);
+                    } else if (mob.jumpPhase != AutonomousJumpPhase.NONE) {
+                        moveAutonomousJump(mob, inWater);
+                    } else {
+                        Location foodTarget = scanFoodTarget(mob);
+                        moveAquaticAutonomously(mob, inWater, foodTarget);
+                    }
+                } else {
+                    Location foodTarget = scanFoodTarget(mob);
+                    moveCrab(mob, inWater, foodTarget);
+                }
+            }
+'''
+          new_tick = '''            boolean unsupportedAir = MarineAirPhysics.isUnsupportedAir(inWater, mob.anchor.isOnGround());
+            if (unsupportedAir) {
+                if (mob.anchor instanceof Horse horse) {
+                    horse.setAI(false);
+                }
+                applyAirborneGravityFallback(mob);
+            } else {
+                mob.lastAirborneY = Double.NaN;
+                if (mob.showControlled) {
+                    if (mob.anchor instanceof Horse horse) {
+                        horse.setAI(false);
+                    }
+                } else {
+                    Player pilot = nativePilot(mob.anchor);
+                    if (mob.anchor instanceof Horse horse) {
+                        horse.setAI(false);
+                    }
+                    if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
+                        if (pilot != null) {
+                            mob.jumpPhase = AutonomousJumpPhase.NONE;
+                            moveWithPlayerDirection(mob, pilot, inWater);
+                        } else if (mob.jumpPhase != AutonomousJumpPhase.NONE) {
+                            moveAutonomousJump(mob, inWater);
+                        } else {
+                            Location foodTarget = scanFoodTarget(mob);
+                            moveAquaticAutonomously(mob, inWater, foodTarget);
+                        }
+                    } else {
+                        Location foodTarget = scanFoodTarget(mob);
+                        moveCrab(mob, inWater, foodTarget);
+                    }
+                }
+            }
+'''
+          service = one(service, old_tick, new_tick, 'tick airborne/rider control')
+
+          old_rider = '''    private void moveWithNativeRider(MarineMob mob, boolean inWater) {
+        mob.anchor.setGravity(true);
+        MarineSpeedLevel maxLevel = mob.type == MarineMobType.ORCA
+                ? MarineSpeedLevel.LEVEL_7 : MarineSpeedLevel.LEVEL_6;
+        double maxSpeed = maxLevel.blocksPerTick();
+
+        Vector velocity = mob.anchor.getVelocity();
+        double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
+        if (horizontalSpeed > maxSpeed) {
+            double factor = maxSpeed / horizontalSpeed;
+            velocity.setX(velocity.getX() * factor);
+            velocity.setZ(velocity.getZ() * factor);
+            mob.anchor.setVelocity(velocity);
+        } else if (inWater && horizontalSpeed > 0.025) {
+            double assisted = Math.min(maxSpeed, horizontalSpeed * 1.09 + 0.004);
+            double factor = assisted / horizontalSpeed;
+            velocity.setX(velocity.getX() * factor);
+            velocity.setZ(velocity.getZ() * factor);
+            mob.anchor.setVelocity(velocity);
+        }
+
+        if (!inWater) {
+            Vector slowed = mob.anchor.getVelocity();
+            slowed.setX(slowed.getX() * 0.55);
+            slowed.setZ(slowed.getZ() * 0.55);
+            mob.anchor.setVelocity(slowed);
+        }
+    }
+'''
+          new_rider = '''    private void applyAirborneGravityFallback(MarineMob mob) {
+        mob.anchor.setGravity(true);
+        Location location = mob.anchor.getLocation();
+        Vector velocity = mob.anchor.getVelocity();
+        if (MarineAirPhysics.needsFallKick(mob.lastAirborneY, location.getY(), velocity.getY())) {
+            velocity.setY(MarineAirPhysics.fallKickVelocity(velocity.getY()));
+            mob.anchor.setVelocity(velocity);
+        }
+        mob.lastAirborneY = location.getY();
+    }
+
+    private void moveWithPlayerDirection(MarineMob mob, Player pilot, boolean inWater) {
+        mob.anchor.setGravity(true);
+        if (!inWater) {
+            return;
+        }
+
+        Location location = mob.anchor.getLocation();
+        Vector look = pilot.getEyeLocation().getDirection();
+        Vector horizontal = look.clone().setY(0.0);
+        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
+            horizontal = forwardFromYaw(pilot.getLocation().getYaw());
+        } else {
+            horizontal.normalize();
+        }
+
+        double speed = MarineRiderControl.riddenBlocksPerTick(mob.type);
+        boolean shallowPool = MarineWaterPhysics.isShallowTwoBlockPool(
+                isWaterAt(location),
+                isWaterAt(location.clone().add(0.0, -1.0, 0.0)),
+                isWaterAt(location.clone().add(0.0, -2.0, 0.0)));
+
+        double vertical;
+        if (shallowPool) {
+            vertical = MarineWaterPhysics.shallowHeightHold(
+                    MarineWaterPhysics.swimmingVertical(0.0),
+                    isWaterAt(location.clone().add(0.0, 1.0, 0.0)),
+                    isWaterAt(location),
+                    isWaterAt(location.clone().add(0.0, -1.0, 0.0)),
+                    isWaterAt(location.clone().add(0.0, -2.0, 0.0)));
+        } else {
+            vertical = MarineWaterPhysics.swimmingVertical(clamp(look.getY() * 0.55, -0.28, 0.28));
+        }
+
+        Vector desired = horizontal.multiply(speed).setY(vertical);
+        double acceleration = mob.type == MarineMobType.ORCA ? 0.48 : 0.30;
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, acceleration);
+        mob.anchor.setVelocity(velocity);
+        mob.anchor.setRotation(pilot.getLocation().getYaw(),
+                (float) clamp(pilot.getLocation().getPitch(), -35.0, 35.0));
+    }
+'''
+          service = one(service, old_rider, new_rider, 'rider control method')
+
+          service = one(service,
+              '        private float visualPitch;\n',
+              '        private float visualPitch;\n        private double lastAirborneY = Double.NaN;\n',
+              'airborne tracking field')
+
+          service_path.write_text(service, encoding='utf-8')
+
+          Path('src/main/java/com/sagakenichi/freelifemarine/MarineAirPhysics.java').write_text('''package com.sagakenichi.freelifemarine;\n\n/**\n * Detects and breaks the stationary-air state some invisible carrier entities can enter.\n * Bukkit gravity remains enabled; the kick is only a fallback when downward motion stalls.\n */\nfinal class MarineAirPhysics {\n\n    private static final double STALL_DELTA_Y = -0.025;\n    private static final double STALL_VERTICAL_VELOCITY = 0.02;\n    private static final double FALL_KICK = 0.12;\n\n    private MarineAirPhysics() {\n    }\n\n    static boolean isUnsupportedAir(boolean inWater, boolean onGround) {\n        return !inWater && !onGround;\n    }\n\n    static boolean needsFallKick(double previousY, double currentY, double verticalVelocity) {\n        if (!Double.isFinite(previousY)) {\n            return false;\n        }\n        double deltaY = currentY - previousY;\n        return verticalVelocity <= STALL_VERTICAL_VELOCITY && deltaY > STALL_DELTA_Y;\n    }\n\n    static double fallKickVelocity(double currentVerticalVelocity) {\n        return Math.min(-FALL_KICK, currentVerticalVelocity - FALL_KICK);\n    }\n}\n''', encoding='utf-8')
+
+          Path('src/main/java/com/sagakenichi/freelifemarine/MarineRiderControl.java').write_text('''package com.sagakenichi.freelifemarine;\n\nfinal class MarineRiderControl {\n\n    static final double PREVIOUS_ORCA_MAX_BLOCKS_PER_SECOND = 14.0;\n    static final double ORCA_SPEED_MULTIPLIER = 4.0;\n    static final double ORCA_RIDDEN_BLOCKS_PER_SECOND = PREVIOUS_ORCA_MAX_BLOCKS_PER_SECOND * ORCA_SPEED_MULTIPLIER;\n    static final double SHARK_RIDDEN_BLOCKS_PER_SECOND = 12.0;\n\n    private MarineRiderControl() {\n    }\n\n    static double riddenBlocksPerSecond(MarineMobType type) {\n        return type == MarineMobType.ORCA ? ORCA_RIDDEN_BLOCKS_PER_SECOND : SHARK_RIDDEN_BLOCKS_PER_SECOND;\n    }\n\n    static double riddenBlocksPerTick(MarineMobType type) {\n        return riddenBlocksPerSecond(type) / 20.0;\n    }\n}\n''', encoding='utf-8')
+
+          Path('src/test/java/com/sagakenichi/freelifemarine/MarineAirPhysicsTest.java').write_text('''package com.sagakenichi.freelifemarine;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nfinal class MarineAirPhysicsTest {\n\n    @Test\n    void unsupportedAirMeansNeitherWaterNorGround() {\n        assertTrue(MarineAirPhysics.isUnsupportedAir(false, false));\n        assertFalse(MarineAirPhysics.isUnsupportedAir(true, false));\n        assertFalse(MarineAirPhysics.isUnsupportedAir(false, true));\n    }\n\n    @Test\n    void stationaryAirGetsDownwardKickButNormalFallingDoesNot() {\n        assertTrue(MarineAirPhysics.needsFallKick(70.0, 70.0, 0.0));\n        assertFalse(MarineAirPhysics.needsFallKick(Double.NaN, 70.0, 0.0));\n        assertFalse(MarineAirPhysics.needsFallKick(70.0, 69.8, -0.20));\n        assertFalse(MarineAirPhysics.needsFallKick(70.0, 70.1, 0.30));\n        assertEquals(-0.12, MarineAirPhysics.fallKickVelocity(0.0), 1.0E-9);\n    }\n}\n''', encoding='utf-8')
+
+          Path('src/test/java/com/sagakenichi/freelifemarine/MarineRiderControlTest.java').write_text('''package com.sagakenichi.freelifemarine;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nfinal class MarineRiderControlTest {\n\n    @Test\n    void riddenOrcaIsExactlyFourTimesPreviousMaximum() {\n        assertEquals(56.0, MarineRiderControl.riddenBlocksPerSecond(MarineMobType.ORCA), 1.0E-9);\n        assertEquals(2.8, MarineRiderControl.riddenBlocksPerTick(MarineMobType.ORCA), 1.0E-9);\n    }\n\n    @Test\n    void sharkRidingKeepsPreviousTopSpeed() {\n        assertEquals(12.0, MarineRiderControl.riddenBlocksPerSecond(MarineMobType.SHARK), 1.0E-9);\n    }\n}\n''', encoding='utf-8')
+
+          pom = Path('pom.xml')
+          text = pom.read_text(encoding='utf-8')
+          text = one(text, '<version>1.8.1</version>', '<version>1.9.0</version>', 'pom version')
+          text = text.replace('FreeLifeMarineMobs-1.8.1-Spigot-1.21.1', 'FreeLifeMarineMobs-1.9.0-Spigot-1.21.1')
+          pom.write_text(text, encoding='utf-8')
+
+          plugin_yml = Path('src/main/resources/plugin.yml')
+          text = plugin_yml.read_text(encoding='utf-8')
+          text = one(text, 'version: 1.8.1', 'version: 1.9.0', 'plugin version')
+          plugin_yml.write_text(text, encoding='utf-8')
+
+          plugin_java = Path('src/main/java/com/sagakenichi/freelifemarine/FreeLifeMarineMobsPlugin.java')
+          text = plugin_java.read_text(encoding='utf-8')
+          text = one(text,
+              'FreeLifeMarineMobs 1.8.1 enabled: more active autonomy and resilient manual show startup are active.',
+              'FreeLifeMarineMobs 1.9.0 enabled: deterministic airborne fall recovery and player-look riding are active.',
+              'startup version')
+          plugin_java.write_text(text, encoding='utf-8')
+
+          build = Path('.github/workflows/build.yml')
+          text = build.read_text(encoding='utf-8')
+          text = text.replace('FreeLifeMarineMobs-1.8.1-Spigot-1.21.1', 'FreeLifeMarineMobs-1.9.0-Spigot-1.21.1')
+          text = one(text,
+              "          jar tf \"$JAR\" | grep -q 'MarineGravityPolicy.class$'\n",
+              "          jar tf \"$JAR\" | grep -q 'MarineGravityPolicy.class$'\n          jar tf \"$JAR\" | grep -q 'MarineAirPhysics.class$'\n          jar tf \"$JAR\" | grep -q 'MarineRiderControl.class$'\n",
+              'build class checks')
+          build.write_text(text, encoding='utf-8')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          text = text.replace('Version 1.8.1 fixes airborne gravity while retaining the more active autonomous swimming and show-start recovery added in 1.8.0.',
+              'Version 1.9.0 adds a stationary-air gravity fallback and player-look riding; ridden orcas now reach 56 blocks/s, exactly four times the previous 14 blocks/s maximum.', 1)
+          text = text.replace('target/FreeLifeMarineMobs-1.8.1-Spigot-1.21.1.jar', 'target/FreeLifeMarineMobs-1.9.0-Spigot-1.21.1.jar')
+          note = '''\n## 1.9.0 rider and airborne behavior\n\nWhile a shark or orca is genuinely unsupported in air, scripted swim/show/rider movement is suspended. Bukkit gravity remains enabled. If the invisible living carrier stops descending near zero vertical velocity, a small downward fallback impulse is applied to break the stationary-air state; normal falling and upward jump velocity are left alone.\n\nThe pilot no longer depends on vanilla Horse steering. While in water, the marine mob follows the pilot's facing direction directly. In a two-block-deep pool, horizontal facing controls travel while the shallow-water height controller keeps the animal inside the water column. In deeper water, player pitch may provide limited ascent/descent. The ridden orca target speed is 56 blocks/s (2.8 blocks/tick), exactly 4x the prior 14 blocks/s riding maximum. Shark riding remains 12 blocks/s.\n'''
+          anchor = '\n## More active autonomous swimming\n'
+          if anchor not in text:
+              raise SystemExit('README anchor missing')
+          text = text.replace(anchor, note + anchor, 1)
+          readme.write_text(text, encoding='utf-8')
+
+          review = Path('REVIEW.md')
+          text = review.read_text(encoding='utf-8')
+          text += '''\n\n## 1.9.0 stationary-air and rider-control review\n\nThe prior gravity fix still relied on the invisible Horse carrier to accumulate native downward motion. A reported live-server case continued to hover. Version 1.9.0 therefore adds a fallback detector: all scripted movement is bypassed in unsupported air, Bukkit gravity stays enabled, and if position/vertical velocity indicate a stationary-air state a small downward impulse is injected. This avoids continuously replacing normal falling velocity and leaves deliberate upward jump velocity untouched.\n\nRidden marine control is now independent of Horse AI. The Horse AI remains disabled and the pilot's facing vector drives the target movement. Orca riding target speed is 56 blocks/s (2.8 blocks/tick), four times the previous 14 blocks/s cap. Extra passenger-seat tracking is raised to 3.6 blocks/tick so it remains above the new anchor speed. This speed is intentionally far above the normal 10-level autonomous scale and may cross short pools very quickly; wall clipping and live-server feel still require E2E testing.\n'''
+          review.write_text(text, encoding='utf-8')
+
+      - name: Commit patched sources
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add .github/workflows/build.yml pom.xml README.md REVIEW.md src
+          git commit -m 'Fix airborne hovering and add player-look orca control'
+          git push origin HEAD:feature/rider-direction-air-gravity-1.9.0
