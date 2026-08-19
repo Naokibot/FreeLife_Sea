@@ -1,71 +1,58 @@
-# FreeLifeMarineMobs 1.5.0 review
+# FreeLifeMarineMobs 1.6.0 review
 
 Target: Spigot 1.21.1 / Java 21
 
 ## Requested changes
 
-- make orca swimming faster;
-- provide ten speed levels, with the fastest reaching 20 blocks/s, and use the levels for different behavior;
-- allow autonomous swimming animals to jump/breach;
-- allow jumps up to 10 blocks;
-- add hit detection to every custom marine mob.
+- keep gravity enabled for the added marine mobs;
+- support a pool whose usable water depth is only two blocks.
 
 ## Review findings and design choices
 
-1. **Speed values needed one common unit and one source of truth.**
-   - `MarineSpeedLevel` defines exactly ten levels.
-   - Level N is `2 * N` blocks/s, so level 10 is exactly 20 blocks/s = 1.0 block/tick.
-   - Existing show velocity requests are quantized to the nearest defined level instead of maintaining a separate arbitrary speed scale.
+1. **The 1.5 autonomous controller disabled gravity underwater.**
+   - Normal autonomous swimming used `setGravity(false)` while in water.
+   - Show-guided swimming and holding also disabled gravity.
+   - Version 1.6 keeps gravity enabled on the living movement carrier during ordinary swimming, show control, jump preparation, airborne motion, re-entry, and native riding.
 
-2. **The maximum speed should not become the default cruise speed.**
-   - Orcas roam mainly at levels 3-6 and use higher levels for food pursuit, surfacing, and breach charging.
-   - Sharks use a narrower, generally lower range.
-   - Edge recovery drops to a low speed so an animal does not hit a pool wall at a 20-block/s burst.
-   - Mounted orcas are allowed a higher assisted cap than before, but normal Horse steering remains authoritative.
+2. **Gravity-on swimming needs active lift, not a static no-gravity state.**
+   - `MarineWaterPhysics` adds a small `0.035` block/tick upward swimming component while an aquatic animal is actively controlling depth in water.
+   - This lift is added to the animal's biological vertical intent; it does not turn gravity off.
+   - Jump preparation uses explicit downward/upward thrust and therefore does not use the ordinary swimming lift.
 
-3. **Autonomous jumps need preparation rather than an instantaneous upward velocity.**
-   - The new state machine is `NONE -> DIVE -> CHARGE -> AIRBORNE -> NONE`.
-   - A jump starts only near a water surface with at least two blocks of water below and a clear non-solid column above.
-   - Orcas choose a 3-10 block target; sharks use smaller 2-5 block breaches and schedule them less often.
-   - Launch height maps to a capped vertical velocity table. The 10-block entry uses 1.344 blocks/tick, selected to target approximately a 10-block apex under ordinary Minecraft entity gravity.
-   - The 10-block value is a simulation/design target, not a claim of pixel-exact live-server height under every server implementation or lag condition.
+3. **The old breach-start test was too deep for a two-block pool.**
+   - Version 1.5 required water one and two blocks below the current position.
+   - In a two-water-layer pool the second probe can already be the floor, so valid shallow pools could fail the test.
+   - Version 1.6 requires the current water layer plus one water layer below. A non-water block two levels below marks the pool as shallow rather than invalid.
 
-4. **Fast jumping must not fight the other controllers.**
-   - Food attraction is not allowed to take over once a breach sequence has started.
-   - Native mounted control cancels autonomous jump state.
-   - Show control cancels autonomous jump state and retains the existing show controller.
-   - Normal autonomous intent is regenerated after water re-entry.
+4. **A full-length dive would hit the floor in shallow water.**
+   - Deep-water orcas retain the existing 24-tick dive preparation; deep-water sharks retain 18 ticks.
+   - In a detected two-block pool both use a four-tick shallow preparation at only `-0.020` vertical velocity, roughly 0.08 block of commanded descent before upward acceleration.
+   - Shallow charge time is also shortened to 32 ticks and upward charge thrust is increased so the animal can transition from the shallow preparation into the existing breach launch without needing extra depth.
 
-5. **One large interaction box did not match the visible bodies.**
-   - Orca now uses six `Interaction` segments along its body.
-   - Shark uses five.
-   - Crab uses three, including lateral claw coverage.
-   - Every segment is mapped to the owning `MarineMob`, so feeding, riding, and damage lookup resolve through the same custom-mob state.
-   - These are targeting/interaction hitboxes. The movement carrier deliberately remains non-collidable; solid push physics is not added because it would make large composite animals snag on pool walls and push passengers unexpectedly.
+5. **Show swimming must follow the same gravity rule.**
+   - `guideShow` and `holdShow` now keep gravity enabled.
+   - When the show-controlled orca is in water, the same swimming-lift term is applied so it can hold the intended show path without reverting to `setGravity(false)`.
+   - Show jump launch already used gravity and remains gravity-driven in air.
 
-6. **The existing display animation must scale sensibly at higher speed.**
-   - Tail/fluke/body animation still derives from actual horizontal velocity, but its scale is bounded to avoid extreme oscillation at level 10.
-   - Existing splash, wake, breathing, food, riding, eight-seat orca, and show-music behavior remains intact.
-
-7. **Pure Spigot limitations remain.**
-   - `Interaction` provides configurable width/height and records interactions, but it is not a solid collision body.
-   - BlockDisplay models remain transformed vanilla cuboids rather than skinned meshes.
+6. **Movement carriers explicitly declare gravity.**
+   - Invisible Horse carriers for sharks/orcas and the Slime carrier for crabs now explicitly call `setGravity(true)` at creation.
+   - Display entities and marker passenger seats remain non-gravity visual/follower components; gravity applies to the living movement carrier that defines the custom mob's physical trajectory.
 
 ## Tests
 
 The unit suite now additionally checks:
 
-- exactly ten speed levels;
-- level 10 = 20 blocks/s = 1.0 block/tick;
-- invalid speed-level rejection;
-- show-speed quantization;
-- positive hitbox dimensions for every custom mob;
-- six orca, five shark, and three crab hitbox segments.
+- two water layers are accepted as sufficient shallow-pool depth;
+- current-water plus one-below-water is required;
+- the shallow-water dive is four ticks;
+- shallow dive vertical command is `-0.020`;
+- shallow charge time is 32 ticks;
+- the normal swimming lift is `0.035` block/tick and composes with vertical intent.
 
-Existing mob-type and show-schedule tests remain.
+Existing speed-level, hitbox, mob-type, and show-schedule tests remain.
 
 ## Verification boundary
 
-CI verifies source compatibility with the declared Spigot 1.21.1 API, unit tests, JAR integrity, `plugin.yml`, `config.yml`, Java 21 class version, speed/hitbox classes, food/show classes, and absence of shaded Bukkit classes.
+CI can verify source compatibility, the shallow-water decision logic, constants, tests, JAR integrity, Java 21 class version, and packaging.
 
-CI does not prove live movement feel. A staging server is still required to measure real breach apex/landing position, 20-block/s behavior in the actual pool, rider stability during high-speed motion, attack targeting between adjacent hitbox segments, and any anti-cheat or server-configuration interaction.
+It cannot prove the exact result of live Horse/Slime water physics, server tick timing, or pool geometry. A staging server is still required to confirm that gravity-on depth holding looks natural, the animal does not visibly clip a two-block-deep floor during jump preparation, and 3-10 block breach trajectories land correctly in the actual aquarium.
