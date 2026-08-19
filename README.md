@@ -2,7 +2,7 @@
 
 FreeLifeMarineMobs is a standalone Spigot 1.21.1 plugin for command-only animated shark, orca, and crab entities.
 
-Version 1.8.0 makes autonomous swimming more active and makes manual orca-show startup easier to diagnose and recover when the saved show center is wrong.
+Version 1.8.1 fixes airborne gravity while retaining the more active autonomous swimming and show-start recovery added in 1.8.0.
 
 ## Requirements
 
@@ -26,6 +26,10 @@ There is no natural spawn path, spawn egg, recipe, or scheduled marine-mob spawn
 Sharks and orcas use an invisible tamed, saddled Horse as the native pilot carrier. Orcas still support up to eight players: one native pilot plus seven additional passenger positions.
 
 Version 1.8 creates those extra ArmorStand passenger seats lazily: they are spawned only when additional riders actually need them, rather than spawning all seven when an orca is created.
+
+## Airborne gravity fix
+
+Aquatic movement control is now suspended whenever a shark or orca is outside water and still airborne. The plugin no longer rewrites vertical velocity every tick in that state, so the invisible living carrier and the visible model fall under normal Minecraft gravity. Scripted show guidance/holding is also water-only; deliberate breach launches still set the initial jump velocity, after which the airborne phase is gravity-driven. Landed animals may still use the restrained return-to-water controller. Crabs likewise stop scripted vertical control while airborne.
 
 ## More active autonomous swimming
 
@@ -151,7 +155,7 @@ mvn -B verify
 Output:
 
 ```text
-target/FreeLifeMarineMobs-1.8.0-Spigot-1.21.1.jar
+target/FreeLifeMarineMobs-1.8.1-Spigot-1.21.1.jar
 ```
 
 ## Verification boundary
