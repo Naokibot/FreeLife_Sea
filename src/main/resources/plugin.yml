@@ -1,9 +1,9 @@
 name: FreeLifeMarineMobs
-version: 1.9.0
+version: 1.9.1
 main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
 api-version: '1.21'
 author: Naokibot
-description: Command-only animated marine mobs with final airborne fall recovery, player-facing orca riding, two-block depth holding, marine food, dense hitboxes, and scheduled orca shows.
+description: Command-only animated marine mobs with deterministic manual air gravity, player-facing orca riding, two-block depth holding, marine food, dense hitboxes, and scheduled orca shows.
 commands:
   marine:
     description: Manage FreeLife marine mobs, marine food, and orca shows.
