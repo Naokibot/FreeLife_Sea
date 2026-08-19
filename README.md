@@ -2,7 +2,7 @@
 
 FreeLifeMarineMobs is a standalone Spigot 1.21.1 plugin for command-only animated shark, orca, and crab entities.
 
-Version 1.7.0 focuses on smoother client motion, much faster marine-food response, stronger two-block-depth holding, and denser interaction/attack hitboxes.
+Version 1.8.0 makes autonomous swimming more active and makes manual orca-show startup easier to diagnose and recover when the saved show center is wrong.
 
 ## Requirements
 
@@ -19,30 +19,17 @@ Version 1.7.0 focuses on smoother client motion, much faster marine-food respons
 
 Permission: `freelifemarine.spawn` (default: server operators).
 
-There is no natural spawn path, spawn egg, recipe, or scheduled mob spawn. All plugin-created marine mobs originate from an explicit command.
+There is no natural spawn path, spawn egg, recipe, or scheduled marine-mob spawn. All plugin-created marine mobs originate from an explicit command.
 
 ### Riding
 
-Sharks and orcas keep native mounted steering through an invisible tamed saddled horse pilot carrier. The orca supports eight players: one pilot and seven passenger seats.
+Sharks and orcas use an invisible tamed, saddled Horse as the native pilot carrier. Orcas still support up to eight players: one native pilot plus seven additional passenger positions.
 
-## Smoother movement
+Version 1.8 creates those extra ArmorStand passenger seats lazily: they are spawned only when additional riders actually need them, rather than spawning all seven when an orca is created.
 
-Display models are now updated every server tick instead of every two ticks. At the maximum 20 blocks/s speed this removes the previous two-block visual step between model updates. BlockDisplay teleport interpolation is reduced to one tick and transformation interpolation remains active.
+## More active autonomous swimming
 
-Visual yaw and pitch are also smoothed independently from the living carrier. The physical carrier still follows the actual controller immediately, while the visible shark/orca body eases toward the new heading instead of snapping to every small rotation change.
-
-## Gravity and two-block-depth holding
-
-Living movement carriers keep Minecraft gravity enabled. Swimming uses active lift and directional thrust rather than disabling gravity.
-
-For a two-block-deep pool, the controller recognizes both useful vertical positions:
-
-- lower water layer: adds a strong upward recovery so the carrier does not scrape the floor;
-- upper water layer: clamps vertical oscillation so the animal does not bounce repeatedly between floor and surface.
-
-Shallow breach preparation still uses the short four-tick, `-0.020` descent introduced in 1.6 before upward acceleration.
-
-## Ten swimming-speed levels
+The ten speed levels remain unchanged:
 
 | Level | Blocks/s | Blocks/tick |
 | --- | ---: | ---: |
@@ -57,7 +44,34 @@ Shallow breach preparation still uses the short four-tick, `-0.020` descent intr
 | 9 | 18 | 0.9 |
 | 10 | 20 | 1.0 |
 
-Normal autonomous movement still uses several tiers rather than staying at maximum speed. High tiers are reserved for food pursuit and breach charging.
+Version 1.8 changes how those levels are used during normal autonomous swimming:
+
+- Orca ordinary roaming: levels 4-7 (8-14 blocks/s), with short level-8 (16 blocks/s) bursts on some behavior changes.
+- Shark ordinary roaming: levels 4-6 (8-12 blocks/s), with occasional level-7 (14 blocks/s) bursts.
+- Orcas choose a new movement intent roughly every 50-120 ticks instead of the previous 95-219 tick range.
+- Sharks choose a new movement intent roughly every 70-150 ticks instead of the previous 130-269 tick range.
+- Orcas can choose turns up to about 55 degrees per intent; sharks up to about 38 degrees.
+- Vertical intent is stronger, so ordinary swimming contains more noticeable rising and diving while the two-block-depth controller still protects shallow pools.
+- Orca autonomous breach opportunities are scheduled roughly every 260-650 ticks (13-32.5 seconds).
+- Shark autonomous breach opportunities are scheduled roughly every 480-1200 ticks (24-60 seconds).
+- Orca surface breathing is also checked more frequently.
+
+These values are targets for the controller. Wall avoidance, shallow-water holding, food pursuit, a rider, or show control can override the current roaming intent.
+
+## Smooth rendering
+
+Visible BlockDisplay models update every server tick. Position interpolation uses one tick, while visible yaw and pitch are smoothed separately from the physical carrier. This keeps the high-speed movement introduced in earlier versions from appearing as large two-tick visual steps.
+
+## Gravity and two-block-depth holding
+
+Living movement carriers keep Minecraft gravity enabled. Swimming uses active lift and directional thrust instead of disabling gravity.
+
+For a two-block-deep pool, the controller distinguishes the lower and upper water layers:
+
+- lower layer: strong upward recovery prevents prolonged floor scraping;
+- upper layer: vertical motion is clamped to reduce bouncing between the floor and surface.
+
+Shallow breach preparation uses a short four-tick, `-0.020` vertical descent before the upward charge.
 
 ## Marine food
 
@@ -69,36 +83,23 @@ Permission: `freelifemarine.food` (default: server operators).
 
 The command creates a PDC-tagged cod item named `海の餌`. Renaming ordinary cod does not create valid marine food.
 
-Food response is more immediate in 1.7:
+Food targets are scanned every two ticks. Distant orcas can pursue food at level 9 (18 blocks/s), distant sharks at level 8 (16 blocks/s), and the controller reduces speed on final approach to reduce overshooting. Show-controlled orcas ignore food until the show finishes.
 
-- food target scanning runs every 2 ticks instead of every 6 ticks;
-- distant orcas can use speed level 9 (18 blocks/s);
-- distant sharks can use speed level 8 (16 blocks/s);
-- acceleration toward food is increased;
-- the final approach automatically drops to a lower tier to reduce overshooting;
-- crabs also move faster while actively approaching food.
+## Segmented hitboxes
 
-Show-controlled orcas still ignore food until the show ends.
-
-## Dense segmented hitboxes
-
-All custom mobs use overlapping `Interaction` hitboxes for feeding, riding and attack targeting:
+All custom mobs use overlapping `Interaction` hitboxes for feeding, riding, and attack targeting:
 
 - Orca: 10 segments;
 - Shark: 8 segments;
 - Crab: 5 segments.
 
-The extra overlapping segments reduce dead zones between the visible head, body, tail and claws. These remain targeting/interaction hitboxes rather than solid push bodies; the invisible movement carrier is non-collidable to avoid snagging large animals on pool geometry.
-
-## Autonomous swimming and breaching
-
-Autonomous aquatic mobs use gradual steering, blended acceleration/deceleration, depth intent, water-edge avoidance, gravity-aware vertical control, and autonomous breach behavior. Orcas can target breach heights up to 10 blocks; sharks use smaller breaches.
+These are interaction/attack hitboxes, not solid push bodies. The invisible movement carrier stays non-collidable to reduce snagging on pool geometry.
 
 ## Orca shows
 
-Show behavior includes formation swimming, high-speed passes, jump waves, synchronized blow/splash cues, note-block music, and return to normal autonomy.
+Show behavior includes formation swimming, high-speed passes, jump waves, synchronized blow/splash cues, note-block music, and return to autonomous swimming.
 
-### Configure and start a show in Minecraft
+### Configure a show
 
 ```text
 /marine show set-center [id]
@@ -108,26 +109,38 @@ Show behavior includes formation swimming, high-speed passes, jump waves, synchr
 /marine show remove-time 10:00 [id]
 /marine show enable [id]
 /marine show disable [id]
-/marine show start [id]
-/marine show stop
 /marine show status
 /marine show list
 /marine show reload
 ```
 
-If `[id]` is omitted, the first configured show is used. The default show id is `orca-show`, so the normal manual-start commands are:
+The default show id is `orca-show`.
+
+### Start a show manually
 
 ```text
 /marine show start
 ```
 
-or explicitly:
+or:
 
 ```text
 /marine show start orca-show
 ```
 
-Settings written by the show configuration commands are saved to `config.yml`.
+Manual startup first searches the saved show center as before. If no tracked orca is in that radius and a player ran the command, version 1.8 also searches around that player (at least 96 blocks). If it finds orcas there, the show starts with the player's current position as a temporary center for that one performance. Use:
+
+```text
+/marine show set-center
+```
+
+to save the correct center permanently.
+
+If startup still fails, the command reports the configured center, control radius, number of tracked usable orcas in that world, and nearest tracked-orca distance. Manual startup results are also written to the server log.
+
+## Residence / CMILib compatibility note
+
+FreeLifeMarineMobs does not depend on Residence or CMILib. If Residence throws a `NoSuchFieldError` from `net.Zrips.CMILib.Version.Version` during `CreatureSpawnEvent`, that indicates a Residence/CMILib binary-version mismatch on the server. Version 1.8 reduces how many spawn events FreeLifeMarineMobs produces by creating extra orca passenger ArmorStands lazily, but it cannot repair incompatible third-party Residence/CMILib JARs. The server's Residence and CMILib versions still need to be mutually compatible.
 
 ## Build
 
@@ -138,11 +151,11 @@ mvn -B verify
 Output:
 
 ```text
-target/FreeLifeMarineMobs-1.7.0-Spigot-1.21.1.jar
+target/FreeLifeMarineMobs-1.8.0-Spigot-1.21.1.jar
 ```
 
 ## Verification boundary
 
-GitHub Actions compiles and tests against the declared Spigot 1.21.1 API, validates the JAR, verifies Java 21 class version 65, and checks that Bukkit classes are not shaded into the plugin.
+GitHub Actions compiles and tests against the declared Spigot 1.21.1 API, validates the release JAR, verifies Java 21 class version 65, and checks that Bukkit classes are not shaded into the plugin.
 
-CI can verify the pursuit tiers, shallow-height controller, hitbox profile and packaging. A real Minecraft staging server is still required to judge subjective smoothness, exact two-block-pool visual clearance, food approach feel at high speed, and hitbox feel from every viewing angle.
+CI can verify the autonomous activity profile, existing speed/pursuit/shallow-water/hitbox logic, source compatibility, and packaging. It cannot reproduce a production server's Residence/CMILib plugin combination or prove the subjective movement feel in a live Minecraft client. A staging server is still required for those E2E checks.

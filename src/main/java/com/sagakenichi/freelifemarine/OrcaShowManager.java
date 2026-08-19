@@ -181,6 +181,16 @@ public final class OrcaShowManager {
     }
 
     public String startShow(String requestedId) {
+        return startShowInternal(requestedId, null, false);
+    }
+
+    public String startShow(String requestedId, Player initiator) {
+        String result = startShowInternal(requestedId, initiator, true);
+        plugin.getLogger().info("Manual orca show request: " + result);
+        return result;
+    }
+
+    private String startShowInternal(String requestedId, Player initiator, boolean allowPlayerFallback) {
         if (active != null) {
             return "A show is already running: " + active.definition.id + ".";
         }
@@ -188,25 +198,55 @@ public final class OrcaShowManager {
         if (definition == null) {
             return unknownShow();
         }
-        World world = Bukkit.getWorld(definition.worldName);
-        if (world == null) {
-            return "Show world '" + definition.worldName + "' is not loaded.";
+
+        World configuredWorld = Bukkit.getWorld(definition.worldName);
+        Location runtimeCenter = configuredWorld == null ? null : definition.center(configuredWorld);
+        List<MarineMobService.MarineMob> selected = configuredWorld == null
+                ? List.of()
+                : mobs.nearbyOrcas(configuredWorld, runtimeCenter, definition.controlRadius, definition.orcaCount);
+        boolean usedPlayerFallback = false;
+
+        if (selected.isEmpty() && allowPlayerFallback && initiator != null) {
+            World playerWorld = initiator.getWorld();
+            Location playerCenter = initiator.getLocation().clone();
+            playerCenter.setYaw(definition.headingYaw);
+            playerCenter.setPitch(0.0F);
+            double fallbackRadius = Math.max(definition.controlRadius, 96.0);
+            List<MarineMobService.MarineMob> nearbyPlayerOrcas = mobs.nearbyOrcas(
+                    playerWorld, playerCenter, fallbackRadius, definition.orcaCount);
+            if (!nearbyPlayerOrcas.isEmpty()) {
+                configuredWorld = playerWorld;
+                runtimeCenter = playerCenter;
+                selected = nearbyPlayerOrcas;
+                usedPlayerFallback = true;
+            }
         }
 
-        Location center = definition.center(world);
-        List<MarineMobService.MarineMob> selected = mobs.nearbyOrcas(
-                world, center, definition.controlRadius, definition.orcaCount);
         if (selected.isEmpty()) {
-            return "No spawned orcas are within " + trim(definition.controlRadius)
-                    + " blocks of the show center. The show was not started.";
+            if (configuredWorld == null || runtimeCenter == null) {
+                return "Show world '" + definition.worldName + "' is not loaded and no spawned orcas were found near you.";
+            }
+            int tracked = mobs.usableOrcaCount(configuredWorld);
+            double nearest = mobs.nearestOrcaDistance(configuredWorld, runtimeCenter);
+            String nearestText = Double.isFinite(nearest)
+                    ? String.format(Locale.ROOT, "%.1f blocks", nearest)
+                    : "none";
+            return "Show not started: 0 orcas are within " + trim(definition.controlRadius)
+                    + " blocks of center " + formatCenter(runtimeCenter) + ". Tracked orcas in world: "
+                    + tracked + "; nearest: " + nearestText
+                    + ". Stand near the orcas and run /marine show start again, or save the center with /marine show set-center.";
         }
 
         for (MarineMobService.MarineMob mob : selected) {
             mobs.beginShowControl(mob);
         }
-        active = new ActiveShow(definition, selected);
-        announce(center, definition.audienceRadius,
+        active = new ActiveShow(definition, selected, runtimeCenter);
+        announce(runtimeCenter, definition.audienceRadius,
                 "§b§lOrca Show §f- §e" + definition.id + " §fhas started!", definition.musicVolume);
+        if (usedPlayerFallback) {
+            return "Started show '" + definition.id + "' with " + selected.size()
+                    + " orca(s) using your location as a temporary center. Use /marine show set-center to save this center.";
+        }
         return "Started show '" + definition.id + "' with " + selected.size() + " orca(s).";
     }
 
@@ -231,9 +271,9 @@ public final class OrcaShowManager {
         for (MarineMobService.MarineMob mob : current.orcas) {
             mobs.endShowControl(mob);
         }
-        World world = Bukkit.getWorld(current.definition.worldName);
-        if (world != null) {
-            announce(current.definition.center(world), current.definition.audienceRadius,
+        Location center = current.center();
+        if (center.getWorld() != null) {
+            announce(center, current.definition.audienceRadius,
                     "§bOrca Show §f- " + reason, current.definition.musicVolume);
         }
         return reason;
@@ -294,8 +334,9 @@ public final class OrcaShowManager {
         if (active != show) {
             return;
         }
-        World world = Bukkit.getWorld(show.definition.worldName);
-        if (world == null) {
+        Location runtimeCenter = show.center();
+        World world = runtimeCenter.getWorld();
+        if (world == null || Bukkit.getWorld(world.getName()) == null) {
             stopShow("Show world unloaded; show cancelled.");
             return;
         }
@@ -306,7 +347,7 @@ public final class OrcaShowManager {
             return;
         }
 
-        Location center = show.definition.center(world);
+        Location center = runtimeCenter;
         int tick = show.tick++;
         if (show.definition.musicEnabled) {
             playMusic(show, center);
@@ -515,6 +556,13 @@ public final class OrcaShowManager {
         return Math.max(min, Math.min(max, value));
     }
 
+    private static String formatCenter(Location center) {
+        return center.getWorld().getName() + " ("
+                + trim(roundCoordinate(center.getX())) + ", "
+                + trim(roundCoordinate(center.getY())) + ", "
+                + trim(roundCoordinate(center.getZ())) + ")";
+    }
+
     private static String trim(double value) {
         return value == Math.rint(value) ? Integer.toString((int) value) : Double.toString(value);
     }
@@ -543,13 +591,19 @@ public final class OrcaShowManager {
     private static final class ActiveShow {
         private final ShowDefinition definition;
         private final List<MarineMobService.MarineMob> orcas;
+        private final Location runtimeCenter;
         private int tick;
         private int musicBeat;
         private boolean blowDone;
 
-        private ActiveShow(ShowDefinition definition, List<MarineMobService.MarineMob> orcas) {
+        private ActiveShow(ShowDefinition definition, List<MarineMobService.MarineMob> orcas, Location runtimeCenter) {
             this.definition = definition;
             this.orcas = new ArrayList<>(orcas);
+            this.runtimeCenter = runtimeCenter.clone();
+        }
+
+        private Location center() {
+            return runtimeCenter.clone();
         }
     }
 }

@@ -22,13 +22,14 @@ jobs:
         run: mvn -B -U verify
       - name: Verify release jar
         run: |
-          JAR=target/FreeLifeMarineMobs-1.7.0-Spigot-1.21.1.jar
+          JAR=target/FreeLifeMarineMobs-1.8.0-Spigot-1.21.1.jar
           unzip -t "$JAR"
           jar tf "$JAR" | grep -q '^plugin.yml$'
           jar tf "$JAR" | grep -q '^config.yml$'
           jar tf "$JAR" | grep -q 'MarineMobService.class$'
           jar tf "$JAR" | grep -q 'MarineWaterPhysics.class$'
           jar tf "$JAR" | grep -q 'MarinePursuitProfile.class$'
+          jar tf "$JAR" | grep -q 'MarineActivityProfile.class$'
           jar tf "$JAR" | grep -q 'MarineSpeedLevel.class$'
           jar tf "$JAR" | grep -q 'MarineHitboxProfile.class$'
           jar tf "$JAR" | grep -q 'MarineFood.class$'
@@ -40,6 +41,6 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: FreeLifeMarineMobs-1.7.0-Spigot-1.21.1
-          path: target/FreeLifeMarineMobs-1.7.0-Spigot-1.21.1.jar
+          name: FreeLifeMarineMobs-1.8.0-Spigot-1.21.1
+          path: target/FreeLifeMarineMobs-1.8.0-Spigot-1.21.1.jar
           if-no-files-found: error
