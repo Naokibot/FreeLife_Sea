@@ -1,0 +1,37 @@
+name: Run 1.8 integration patch
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'feature/active-autonomy-show-fallback-1.8' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/active-autonomy-show-fallback-1.8
+      - name: Apply patch script stored in the branch
+        shell: python
+        run: |
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/apply-active-show-fix-1-8.yml').read_text(encoding='utf-8')
+          start = '      - name: Apply integration patch\n        shell: python\n        run: |\n'
+          end = '      - name: Commit integration patch\n'
+          if start not in workflow or end not in workflow:
+              raise SystemExit('Could not locate integration patch block')
+          block = workflow.split(start, 1)[1].split(end, 1)[0]
+          code = textwrap.dedent(block)
+          exec(compile(code, 'apply-active-show-fix-1-8.yml', 'exec'))
+      - name: Commit patched sources
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add src pom.xml .github/workflows/build.yml
+          git commit -m 'Make autonomous swimming more active and harden show startup'
+          git push origin HEAD:feature/active-autonomy-show-fallback-1.8
