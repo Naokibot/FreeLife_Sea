@@ -16,7 +16,6 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -91,7 +90,9 @@ public final class OrcaShowManager {
         }
         ShowDefinition definition = findDefinition(requestedId);
         if (definition == null) {
-            return definitions.isEmpty() ? "No shows are configured." : "Unknown show. Available: " + String.join(", ", definitions.keySet());
+            return definitions.isEmpty()
+                    ? "No shows are configured."
+                    : "Unknown show. Available: " + String.join(", ", definitions.keySet());
         }
         World world = Bukkit.getWorld(definition.worldName);
         if (world == null) {
@@ -99,9 +100,11 @@ public final class OrcaShowManager {
         }
 
         Location center = definition.center(world);
-        List<MarineMobService.MarineMob> selected = mobs.nearbyOrcas(world, center, definition.controlRadius, definition.orcaCount);
+        List<MarineMobService.MarineMob> selected = mobs.nearbyOrcas(
+                world, center, definition.controlRadius, definition.orcaCount);
         if (selected.isEmpty()) {
-            return "No spawned orcas are within " + trim(definition.controlRadius) + " blocks of the show center. The show was not started.";
+            return "No spawned orcas are within " + trim(definition.controlRadius)
+                    + " blocks of the show center. The show was not started.";
         }
 
         for (MarineMobService.MarineMob mob : selected) {
@@ -136,8 +139,8 @@ public final class OrcaShowManager {
         }
         World world = Bukkit.getWorld(current.definition.worldName);
         if (world != null) {
-            Location center = current.definition.center(world);
-            announce(center, current.definition.audienceRadius, "§bOrca Show §f- " + reason, current.definition.musicVolume);
+            announce(current.definition.center(world), current.definition.audienceRadius,
+                    "§bOrca Show §f- " + reason, current.definition.musicVolume);
         }
         return reason;
     }
@@ -232,7 +235,8 @@ public final class OrcaShowManager {
                 for (MarineMobService.MarineMob mob : show.orcas) {
                     mobs.emitShowBlow(mob);
                 }
-                announce(center, show.definition.audienceRadius, "§f§lSplash & blow!", show.definition.musicVolume);
+                announce(center, show.definition.audienceRadius,
+                        "§f§lSplash & blow!", show.definition.musicVolume);
             }
         } else if (tick < SHOW_END_TICK) {
             guideFormation(show, center, -10.0, -0.45, 0.38);
@@ -266,9 +270,9 @@ public final class OrcaShowManager {
             if (tick < launchTick) {
                 mobs.guideShow(mob, prep, 0.24);
             } else if (tick == launchTick) {
-                show.launched.add(mob.id());
                 mobs.launchShowJump(mob, landing, 0.54, 0.72);
-                announce(center, show.definition.audienceRadius, "§bJump!", show.definition.musicVolume);
+                announce(center, show.definition.audienceRadius,
+                        "§bJump!", show.definition.musicVolume);
             } else if (tick > launchTick + 52) {
                 mobs.guideShow(mob, landing, 0.34);
             }
@@ -292,13 +296,17 @@ public final class OrcaShowManager {
             if (player.getLocation().distanceSquared(center) > radiusSquared) {
                 continue;
             }
-            player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_HARP, SoundCategory.MUSIC, volume, melodyPitch);
+            player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_HARP,
+                    SoundCategory.MUSIC, volume, melodyPitch);
             if (beat % 4 == 0) {
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, SoundCategory.MUSIC, volume * 0.72F, 0.80F);
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASEDRUM, SoundCategory.MUSIC, volume * 0.62F, 1.00F);
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS,
+                        SoundCategory.MUSIC, volume * 0.72F, 0.80F);
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASEDRUM,
+                        SoundCategory.MUSIC, volume * 0.62F, 1.00F);
             }
             if (beat % 8 == 6) {
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, SoundCategory.MUSIC, volume * 0.46F, melodyPitch * 1.12F);
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL,
+                        SoundCategory.MUSIC, volume * 0.46F, melodyPitch * 1.12F);
             }
         }
     }
@@ -326,17 +334,19 @@ public final class OrcaShowManager {
     }
 
     private ShowDefinition readDefinition(String id, ConfigurationSection section) {
-        ZoneId zone = ShowSchedule.parseZone(section.getString("time-zone"), DEFAULT_ZONE);
         String configuredZone = section.getString("time-zone");
-        if (configuredZone != null && !configuredZone.isBlank() && !zone.getId().equals(configuredZone.trim())) {
-            plugin.getLogger().warning("Show '" + id + "' has invalid time-zone '" + configuredZone
-                    + "'; falling back to " + DEFAULT_ZONE + '.');
+        ZoneId zone = ShowSchedule.parseZone(configuredZone, DEFAULT_ZONE);
+        if (configuredZone != null && !configuredZone.isBlank()
+                && !zone.getId().equals(configuredZone.trim())) {
+            plugin.getLogger().warning("Show '" + id + "' has invalid time-zone '"
+                    + configuredZone + "'; falling back to " + DEFAULT_ZONE + ".");
         }
 
         List<String> rawTimes = section.getStringList("times");
         List<LocalTime> times = ShowSchedule.parseTimes(rawTimes);
         if (times.size() != rawTimes.size()) {
-            plugin.getLogger().warning("Show '" + id + "' contains invalid or duplicate times; valid entries were kept.");
+            plugin.getLogger().warning("Show '" + id
+                    + "' contains invalid or duplicate times; valid entries were kept.");
         }
 
         ConfigurationSection center = section.getConfigurationSection("center");
@@ -346,7 +356,8 @@ public final class OrcaShowManager {
 
         ConfigurationSection music = section.getConfigurationSection("music");
         boolean musicEnabled = music == null || music.getBoolean("enabled", true);
-        float musicVolume = (float) clamp(music == null ? 0.75 : music.getDouble("volume", 0.75), 0.0, 2.0);
+        float musicVolume = (float) clamp(
+                music == null ? 0.75 : music.getDouble("volume", 0.75), 0.0, 2.0);
 
         return new ShowDefinition(
                 id,
@@ -370,11 +381,15 @@ public final class OrcaShowManager {
         return (index - (count - 1) / 2.0) * spacing;
     }
 
-    private static Location relative(Location center, float yaw, double forward, double up, double right) {
+    private static Location relative(Location center, float yaw,
+                                     double forward, double up, double right) {
         double radians = Math.toRadians(yaw);
         Vector forwardVector = new Vector(-Math.sin(radians), 0.0, Math.cos(radians));
         Vector rightVector = new Vector(forwardVector.getZ(), 0.0, -forwardVector.getX());
-        return center.clone().add(forwardVector.multiply(forward)).add(rightVector.multiply(right)).add(0.0, up, 0.0);
+        return center.clone()
+                .add(forwardVector.multiply(forward))
+                .add(rightVector.multiply(right))
+                .add(0.0, up, 0.0);
     }
 
     private static double clamp(double value, double min, double max) {
@@ -413,7 +428,6 @@ public final class OrcaShowManager {
     private static final class ActiveShow {
         private final ShowDefinition definition;
         private final List<MarineMobService.MarineMob> orcas;
-        private final Set<java.util.UUID> launched = new HashSet<>();
         private int tick;
         private int musicBeat;
         private boolean blowDone;
