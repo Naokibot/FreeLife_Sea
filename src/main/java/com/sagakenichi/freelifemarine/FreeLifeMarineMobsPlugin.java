@@ -19,7 +19,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         marine.setTabCompleter(command);
         getServer().getPluginManager().registerEvents(new MarineMobListener(mobs), this);
         mobs.start();
-        getLogger().info("FreeLifeMarineMobs 1.1.0 enabled: shark, orca, and crab.");
+        getLogger().info("FreeLifeMarineMobs 1.2.0 enabled: native riding controls and refined marine models.");
     }
 
     @Override

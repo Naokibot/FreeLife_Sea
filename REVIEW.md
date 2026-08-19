@@ -1,87 +1,63 @@
-# FreeLifeMarineMobs 1.1.0 review
+# FreeLifeMarineMobs 1.2.0 review
 
 Target: Spigot 1.21.1 / Java 21
 
 ## Requested changes
 
-- make marine creatures more realistic
-- add crab
-- make creatures move autonomously
-- add splash/bubble behavior when entering or leaving water
-- enlarge the orca
-- allow up to eight players to ride an orca
-- substantially improve the orca model quality
+- make riding controllable like a horse rather than simply following the rider's camera direction;
+- make shark/orca graphics closer to real animals.
 
-## Review findings and fixes
+## Review findings and design choices
 
-1. **The old orca silhouette was too small and too coarse.**
-   - Rebuilt it as a roughly 9-10 block long model.
-   - Increased the visual model to 28 separate parts.
-   - Separated dorsal body, white underside, eye patches, saddle patches, pectoral flippers, multi-stage dorsal fin, tail stock, and two horizontal tail flukes.
+1. **The old rider path was not horse-like.**
+   - Version 1.1 drove the hidden anchor directly from the pilot's look vector.
+   - Version 1.2 replaces the pilot carrier of rideable creatures with an invisible, tamed, saddled vanilla horse.
+   - The player therefore sends the normal mounted movement input to a native Minecraft rideable entity.
+   - The plugin no longer synthesizes steering from camera direction.
 
-2. **Using the old single passenger carrier cannot provide eight controlled seat positions.**
-   - Orca now owns eight independent invisible marker armor-stand seats.
-   - Seat offsets are explicitly defined over the back.
-   - The first occupied seat acts as pilot and the other occupied seats follow as passengers.
-   - Occupied seats are velocity-corrected toward their desired offsets rather than teleported every tick, reducing the risk of vehicle teleport behavior ejecting riders.
+2. **Using an experimental/new input API would add avoidable version risk.**
+   - The target remains Spigot 1.21.1.
+   - Native horse steering is used instead of depending on later/experimental player-input APIs or NMS packet hooks.
 
-3. **Shark and orca tail motion should not be identical.**
-   - Shark tail parts sweep side-to-side around the vertical axis.
-   - Orca flukes oscillate vertically around the lateral axis.
+3. **A hidden horse has stronger water drag than a real shark/orca.**
+   - The plugin preserves native steering and only applies a small capped horizontal assist while in water.
+   - It does not overwrite the pilot's direction every tick.
+   - On land, shark/orca speed is damped to discourage unrealistic land travel.
 
-4. **Static creatures did not satisfy the movement requirement.**
-   - Sharks and orcas now cruise autonomously in water and periodically change heading.
-   - They turn away when the sampled position ahead no longer contains water.
-   - When stranded, they periodically search a small nearby radius for water and move toward it with restrained flop-like motion.
+4. **Native Horse AI must not fight the marine autonomous controller.**
+   - Horse AI is enabled only while a player occupies the pilot seat.
+   - With no pilot, horse AI is disabled and the plugin's autonomous aquatic controller is the only movement controller.
 
-5. **The invisible Slime carrier can otherwise behave like a normal living mob underwater.**
-   - Remaining air is refreshed every tick so a marine creature does not die because its implementation carrier drowns.
-   - Fall distance is reset because health is managed by the plugin rather than by the hidden carrier's fall history.
+5. **The old 28-part orca still had a visibly stepped body.**
+   - The new orca has 48 display parts.
+   - Body sections are shorter and taper progressively from rostrum to peduncle.
+   - Eye patches, saddle patches, underside, dorsal fin, pectoral fins, flukes, mouth edge, eyes, and blowhole are independently modeled.
 
-6. **Water effects could spam if emitted continuously.**
-   - Large splash/bubble effects are emitted only on water-state transitions.
-   - A smaller surface wake is rate-limited to every five ticks and only while moving near the surface.
+6. **The shark silhouette needed the same treatment.**
+   - The shark now has 39 display parts.
+   - It includes nine tapered body sections, five underside sections, ten gill slits, multiple fins, mouth/eye details, and asymmetric caudal lobes.
 
-7. **Orcas need a surface behavior distinct from fish.**
-   - Near the surface, an orca periodically produces a small blowhole-like cloud/splash effect.
-   - This is visual approximation only; no attempt is made to simulate respiration physiology.
+7. **Eight-player orca seating must remain intact after changing the pilot carrier.**
+   - Seat 1 is now the native horse carrier and is the pilot position.
+   - Seats 2-8 remain independent invisible armor-stand passenger seats.
+   - Passenger seats follow the native pilot carrier with velocity correction.
 
-8. **Crab locomotion should not reuse fish movement.**
-   - Crab has a separate lateral movement style.
-   - It moves sideways relative to body orientation, periodically reverses direction, and alternates two leg-animation groups.
-   - Crab is intentionally not rideable because that better matches the realism request.
+8. **Autonomous behavior must resume after the pilot dismounts.**
+   - The same anchor is reused.
+   - When it has no player passenger, custom autonomous water movement resumes.
+   - Gravity is disabled for autonomous submerged motion and restored for native ridden movement.
 
-9. **The old shark model was also visually sparse.**
-   - Shark now has 23 parts including tapered body sections, underside, eyes, six gill marks, dorsal and pectoral fins, tail stock, and animated upper/lower caudal sections.
+9. **The graphical ceiling of pure Spigot must be explicit.**
+   - Vanilla `BlockDisplay` supports transformed block cuboids, not arbitrary external meshes.
+   - No third-party OBJ/GLTF/model bytes are embedded.
+   - A resource-pack-backed model system would be needed for a genuinely smooth high-poly animal.
 
-10. **Display-entity animation can become expensive when every part is transformed every server tick.**
-    - Physics and rider control remain tick-based.
-    - Display transforms update every two ticks and use client interpolation/teleport duration to smooth visual motion.
+## Tests
 
-11. **Water detection must include more than a plain WATER material block.**
-    - The check handles normal water, bubble columns, and Bukkit `Waterlogged` block data.
-
-12. **Internet model references must not introduce licensing or redistribution problems.**
-    - No OBJ, GLTF, texture, animation, or downloaded model bytes are committed or shaded into the JAR.
-    - External models are used only as visual references and are listed in README with their published licenses.
-
-13. **Command-only spawning must remain intact.**
-    - `/marine spawn shark`, `/marine spawn orca`, and `/marine spawn crab` are the only plugin spawn paths.
-    - No natural spawning listener or scheduled spawning was added.
-
-## Test additions
-
-The type test now checks:
-
-- shark/orca/crab command parsing
-- exactly eight orca seats
-- one shark seat and zero crab seats
-- minimum part-count floors for the upgraded models
-- 10 health for all creature types
-- positive dimensions for every model part
+The unit suite checks command parsing, eight orca seats, one shark seat, crab non-rideability, 10 health, positive model dimensions, and the new minimum detail floors of 48 orca parts and 39 shark parts.
 
 ## Verification boundary
 
-GitHub Actions compiles against the real Spigot 1.21.1 API, runs unit tests, validates the release JAR, checks Java 21 class version 65, and checks that Bukkit classes are not shaded into the plugin.
+CI verifies source compatibility with the real Spigot 1.21.1 API, unit tests, JAR integrity, Java 21 class version, and absence of shaded Bukkit classes.
 
-A real Minecraft client is not available in CI. Therefore the following must still be treated as staging-E2E items rather than CI-proven behavior: eight simultaneous human riders, passenger seat comfort/spacing, exact model appearance from all camera angles, particle placement at shorelines, collision feel, and long-duration autonomous navigation in real terrain.
+CI cannot prove real client steering feel. In particular, deep-water mounted behavior of the hidden horse, jump behavior, eight simultaneous human riders, collision feel, and final visual proportions still require a staging-server E2E test.

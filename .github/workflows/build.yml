@@ -22,7 +22,7 @@ jobs:
         run: mvn -B -U verify
       - name: Verify release jar
         run: |
-          JAR=target/FreeLifeMarineMobs-1.1.0-Spigot-1.21.1.jar
+          JAR=target/FreeLifeMarineMobs-1.2.0-Spigot-1.21.1.jar
           unzip -t "$JAR"
           jar tf "$JAR" | grep -q '^plugin.yml$'
           jar tf "$JAR" | grep -q 'MarineMobService.class$'
@@ -33,6 +33,6 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: FreeLifeMarineMobs-1.1.0-Spigot-1.21.1
-          path: target/FreeLifeMarineMobs-1.1.0-Spigot-1.21.1.jar
+          name: FreeLifeMarineMobs-1.2.0-Spigot-1.21.1
+          path: target/FreeLifeMarineMobs-1.2.0-Spigot-1.21.1.jar
           if-no-files-found: error

@@ -1,9 +1,9 @@
 name: FreeLifeMarineMobs
-version: '1.1.0'
+version: '1.2.0'
 main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
 api-version: '1.21'
 author: Naokibot
-description: Command-only animated shark, orca, and crab mobs rendered with vanilla display entities.
+description: Command-only animated shark, orca, and crab mobs with native mounted steering.
 commands:
   marine:
     description: Spawn a FreeLife marine mob.
