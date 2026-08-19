@@ -200,7 +200,7 @@ public final class MarineMobService {
         mob.jumpPhase = AutonomousJumpPhase.NONE;
         mob.cachedWaterDirection = null;
         mob.foodTarget = null;
-        mob.anchor.setGravity(false);
+        mob.anchor.setGravity(true);
         mob.anchor.setVelocity(new Vector());
         if (mob.anchor instanceof Horse horse) {
             horse.setAI(false);
@@ -214,7 +214,7 @@ public final class MarineMobService {
         mob.showControlled = false;
         mob.targetYaw = mob.anchor.getLocation().getYaw();
         mob.behaviorTicks = randomTicks(80, 170);
-        mob.anchor.setGravity(!isWaterContact(mob.anchor.getLocation()));
+        mob.anchor.setGravity(true);
         refreshNaturalIntent(mob);
         scheduleNextJump(mob);
         if (mob.anchor instanceof Horse horse) {
@@ -244,8 +244,11 @@ public final class MarineMobService {
             direction.normalize();
         }
 
+        if (isWaterContact(current)) {
+            vertical = MarineWaterPhysics.swimmingVertical(vertical);
+        }
         Vector velocity = direction.multiply(speed).setY(vertical);
-        mob.anchor.setGravity(false);
+        mob.anchor.setGravity(true);
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yawFromVector(direction), (float) clamp(-vertical * 120.0, -14.0, 14.0));
     }
@@ -255,8 +258,9 @@ public final class MarineMobService {
             return;
         }
         Vector slowed = mob.anchor.getVelocity().multiply(0.28);
-        slowed.setY(0.0);
-        mob.anchor.setGravity(false);
+        slowed.setY(isWaterContact(mob.anchor.getLocation())
+                ? MarineWaterPhysics.SWIM_LIFT_PER_TICK : slowed.getY());
+        mob.anchor.setGravity(true);
         mob.anchor.setVelocity(slowed);
     }
 
@@ -442,7 +446,7 @@ public final class MarineMobService {
 
     private void moveAquaticAutonomously(MarineMob mob, boolean inWater, Location foodTarget) {
         Location location = mob.anchor.getLocation();
-        mob.anchor.setGravity(!inWater);
+        mob.anchor.setGravity(true);
 
         if (!inWater) {
             returnToWater(mob, location);
@@ -492,7 +496,9 @@ public final class MarineMobService {
 
         float yaw = turnTowards(location.getYaw(), mob.targetYaw, mob.type.autonomousTurnRate());
         Vector desired = forwardFromYaw(yaw).multiply(mob.speedLevel.blocksPerTick());
-        desired.setY(mob.verticalIntent + Math.sin(mob.ageTicks * (mob.type == MarineMobType.ORCA ? 0.035 : 0.025)) * 0.006);
+        double swimVertical = mob.verticalIntent
+                + Math.sin(mob.ageTicks * (mob.type == MarineMobType.ORCA ? 0.035 : 0.025)) * 0.006;
+        desired.setY(MarineWaterPhysics.swimmingVertical(swimVertical));
         Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration());
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 135.0, -11.0, 11.0));
@@ -502,16 +508,22 @@ public final class MarineMobService {
         if (mob.type == MarineMobType.CRAB || !isNearSurface(location)) {
             return false;
         }
-        if (!isWaterAt(location.clone().add(0.0, -1.0, 0.0))
-                || !isWaterAt(location.clone().add(0.0, -2.0, 0.0))) {
+        if (!MarineWaterPhysics.supportsTwoBlockPool(
+                isWaterAt(location),
+                isWaterAt(location.clone().add(0.0, -1.0, 0.0)))) {
             return false;
         }
         return hasClearJumpColumn(location, 11);
     }
 
     private void beginAutonomousJump(MarineMob mob) {
+        Location location = mob.anchor.getLocation();
+        mob.shallowJump = MarineWaterPhysics.isShallowTwoBlockPool(
+                isWaterAt(location),
+                isWaterAt(location.clone().add(0.0, -1.0, 0.0)),
+                isWaterAt(location.clone().add(0.0, -2.0, 0.0)));
         mob.jumpPhase = AutonomousJumpPhase.DIVE;
-        mob.jumpPhaseTicks = mob.type == MarineMobType.ORCA ? 24 : 18;
+        mob.jumpPhaseTicks = MarineWaterPhysics.diveTicks(mob.shallowJump, mob.type);
         mob.jumpHeight = mob.type == MarineMobType.ORCA
                 ? ThreadLocalRandom.current().nextInt(3, 11)
                 : ThreadLocalRandom.current().nextInt(2, 6);
@@ -550,17 +562,17 @@ public final class MarineMobService {
 
         if (mob.jumpPhase == AutonomousJumpPhase.DIVE) {
             speedLevel = mob.type == MarineMobType.ORCA ? MarineSpeedLevel.LEVEL_5 : MarineSpeedLevel.LEVEL_4;
-            vertical = -0.095;
-            acceleration = 0.12;
+            vertical = MarineWaterPhysics.diveVertical(mob.shallowJump);
+            acceleration = mob.shallowJump ? 0.18 : 0.12;
             mob.jumpPhaseTicks--;
             if (mob.jumpPhaseTicks <= 0) {
                 mob.jumpPhase = AutonomousJumpPhase.CHARGE;
-                mob.jumpPhaseTicks = 48;
+                mob.jumpPhaseTicks = MarineWaterPhysics.chargeTicks(mob.shallowJump);
             }
         } else {
             speedLevel = mob.jumpSpeedLevel;
-            vertical = 0.135;
-            acceleration = 0.18;
+            vertical = MarineWaterPhysics.CHARGE_VERTICAL;
+            acceleration = mob.shallowJump ? 0.24 : 0.18;
             mob.jumpPhaseTicks--;
             if (isNearSurface(location) && mob.jumpPhaseTicks <= 34) {
                 launchAutonomousJump(mob, yaw);
@@ -574,7 +586,7 @@ public final class MarineMobService {
 
         Vector desired = forwardFromYaw(yaw).multiply(speedLevel.blocksPerTick()).setY(vertical);
         Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, acceleration);
-        mob.anchor.setGravity(false);
+        mob.anchor.setGravity(true);
         mob.anchor.setVelocity(velocity);
         mob.anchor.setRotation(yaw, (float) clamp(-velocity.getY() * 120.0, -15.0, 15.0));
     }
@@ -601,7 +613,8 @@ public final class MarineMobService {
         mob.jumpPhase = AutonomousJumpPhase.NONE;
         mob.airborneTicks = 0;
         mob.jumpPhaseTicks = 0;
-        mob.anchor.setGravity(!inWater);
+        mob.anchor.setGravity(true);
+        mob.shallowJump = false;
         scheduleNextJump(mob);
         refreshNaturalIntent(mob);
     }
@@ -685,7 +698,9 @@ public final class MarineMobService {
         double speed = level.blocksPerTick();
 
         boolean targetInWater = isWaterAt(target) || isWaterAt(target.clone().add(0.0, -0.7, 0.0));
-        double vertical = targetInWater ? clamp(delta.getY() * 0.08, -0.060, 0.060) : 0.0;
+        double vertical = targetInWater
+                ? MarineWaterPhysics.swimmingVertical(clamp(delta.getY() * 0.08, -0.060, 0.060))
+                : 0.0;
         if (!isWaterAt(location.clone().add(forwardFromYaw(yaw).multiply(1.6)))) {
             speed = MarineSpeedLevel.LEVEL_2.blocksPerTick();
             vertical = Math.min(vertical, 0.0);
@@ -1003,6 +1018,7 @@ public final class MarineMobService {
                 horse.setDomestication(horse.getMaxDomestication());
                 horse.setInvisible(true);
                 horse.setSilent(true);
+                horse.setGravity(true);
                 horse.setCollidable(false);
                 horse.setPersistent(false);
                 horse.setRemoveWhenFarAway(false);
@@ -1016,6 +1032,7 @@ public final class MarineMobService {
             slime.setAI(false);
             slime.setInvisible(true);
             slime.setSilent(true);
+            slime.setGravity(true);
             slime.setCollidable(false);
             slime.setPersistent(false);
             slime.setRemoveWhenFarAway(false);
@@ -1205,6 +1222,7 @@ public final class MarineMobService {
         private int airborneTicks;
         private int jumpHeight;
         private MarineSpeedLevel jumpSpeedLevel = MarineSpeedLevel.LEVEL_8;
+        private boolean shallowJump;
 
         private MarineMob(MarineMobType type, LivingEntity anchor, List<Interaction> hitboxes,
                           List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
