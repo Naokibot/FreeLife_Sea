@@ -1,0 +1,110 @@
+name: Apply gravity hotfix 1.8.1
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'feature/fix-airborne-gravity-1.8.1' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/fix-airborne-gravity-1.8.1
+      - name: Apply gravity fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def one(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          service_path = Path('src/main/java/com/sagakenichi/freelifemarine/MarineMobService.java')
+          service = service_path.read_text(encoding='utf-8')
+
+          service = one(service,
+              '''            mob.ageTicks++;\n            mob.anchor.setRemainingAir(mob.anchor.getMaximumAir());\n            mob.anchor.setFallDistance(0.0F);\n\n            boolean inWater = isWaterContact(mob.anchor.getLocation());''',
+              '''            mob.ageTicks++;\n            mob.anchor.setRemainingAir(mob.anchor.getMaximumAir());\n\n            boolean inWater = isWaterContact(mob.anchor.getLocation());\n            if (inWater) {\n                mob.anchor.setFallDistance(0.0F);\n            }''',
+              'airborne fall distance')
+
+          service = one(service,
+              '''        Location current = mob.anchor.getLocation();\n        Vector delta = target.toVector().subtract(current.toVector());''',
+              '''        Location current = mob.anchor.getLocation();\n        if (!MarineGravityPolicy.allowScriptedAquaticMotion(isWaterContact(current))) {\n            mob.anchor.setGravity(true);\n            return;\n        }\n        Vector delta = target.toVector().subtract(current.toVector());''',
+              'show guide gravity release')
+
+          service = one(service,
+              '''        Vector slowed = mob.anchor.getVelocity().multiply(0.28);\n        slowed.setY(isWaterContact(mob.anchor.getLocation())\n                ? MarineWaterPhysics.SWIM_LIFT_PER_TICK : slowed.getY());\n        mob.anchor.setGravity(true);\n        mob.anchor.setVelocity(slowed);''',
+              '''        boolean inWater = isWaterContact(mob.anchor.getLocation());\n        if (!MarineGravityPolicy.allowScriptedAquaticMotion(inWater)) {\n            mob.anchor.setGravity(true);\n            return;\n        }\n        Vector slowed = mob.anchor.getVelocity().multiply(0.28);\n        slowed.setY(MarineWaterPhysics.SWIM_LIFT_PER_TICK);\n        mob.anchor.setGravity(true);\n        mob.anchor.setVelocity(slowed);''',
+              'show hold gravity release')
+
+          service = one(service,
+              '''        if (!inWater) {\n            returnToWater(mob, location);\n            return;\n        }''',
+              '''        if (!inWater) {\n            if (MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {\n                mob.cachedWaterDirection = null;\n                mob.anchor.setGravity(true);\n                return;\n            }\n            returnToWater(mob, location);\n            return;\n        }''',
+              'autonomous air gravity')
+
+          service = one(service,
+              '''        if (!inWater) {\n            finishAutonomousJump(mob, false);\n            returnToWater(mob, location);\n            return;\n        }''',
+              '''        if (!inWater) {\n            finishAutonomousJump(mob, false);\n            mob.anchor.setGravity(true);\n            if (!MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {\n                returnToWater(mob, location);\n            }\n            return;\n        }''',
+              'jump exit gravity')
+
+          service = one(service,
+              '''    private void returnToWater(MarineMob mob, Location location) {\n        if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {''',
+              '''    private void returnToWater(MarineMob mob, Location location) {\n        if (MarineGravityPolicy.useNativeAirGravity(false, mob.anchor.isOnGround())) {\n            mob.anchor.setGravity(true);\n            return;\n        }\n        if (mob.ageTicks % 20L == 0L || mob.cachedWaterDirection == null) {''',
+              'return-to-water defensive gravity')
+
+          service = one(service,
+              '''    private void moveCrab(MarineMob mob, boolean inWater, Location foodTarget) {\n        mob.anchor.setGravity(true);\n        Location location = mob.anchor.getLocation();\n\n        if (foodTarget != null) {''',
+              '''    private void moveCrab(MarineMob mob, boolean inWater, Location foodTarget) {\n        mob.anchor.setGravity(true);\n        Location location = mob.anchor.getLocation();\n        if (MarineGravityPolicy.useNativeAirGravity(inWater, mob.anchor.isOnGround())) {\n            return;\n        }\n\n        if (foodTarget != null) {''',
+              'crab airborne gravity')
+
+          service_path.write_text(service, encoding='utf-8')
+
+          Path('src/main/java/com/sagakenichi/freelifemarine/MarineGravityPolicy.java').write_text('''package com.sagakenichi.freelifemarine;\n\n/**\n * Keeps scripted swim movement from cancelling Minecraft gravity while a marine mob is airborne.\n */\nfinal class MarineGravityPolicy {\n\n    private MarineGravityPolicy() {\n    }\n\n    static boolean useNativeAirGravity(boolean inWater, boolean onGround) {\n        return !inWater && !onGround;\n    }\n\n    static boolean allowScriptedAquaticMotion(boolean inWater) {\n        return inWater;\n    }\n}\n''', encoding='utf-8')
+
+          Path('src/test/java/com/sagakenichi/freelifemarine/MarineGravityPolicyTest.java').write_text('''package com.sagakenichi.freelifemarine;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nfinal class MarineGravityPolicyTest {\n\n    @Test\n    void airborneAnimalsAreReleasedToMinecraftGravity() {\n        assertTrue(MarineGravityPolicy.useNativeAirGravity(false, false));\n        assertFalse(MarineGravityPolicy.useNativeAirGravity(false, true));\n        assertFalse(MarineGravityPolicy.useNativeAirGravity(true, false));\n    }\n\n    @Test\n    void scriptedSwimMotionIsLimitedToWater() {\n        assertTrue(MarineGravityPolicy.allowScriptedAquaticMotion(true));\n        assertFalse(MarineGravityPolicy.allowScriptedAquaticMotion(false));\n    }\n}\n''', encoding='utf-8')
+
+          pom = Path('pom.xml').read_text(encoding='utf-8')
+          pom = pom.replace('<version>1.8.0</version>', '<version>1.8.1</version>', 1)
+          pom = pom.replace('FreeLifeMarineMobs-1.8.0-Spigot-1.21.1', 'FreeLifeMarineMobs-1.8.1-Spigot-1.21.1')
+          Path('pom.xml').write_text(pom, encoding='utf-8')
+
+          plugin_yml = Path('src/main/resources/plugin.yml')
+          text = plugin_yml.read_text(encoding='utf-8')
+          text = one(text, 'version: 1.8.0', 'version: 1.8.1', 'plugin version')
+          plugin_yml.write_text(text, encoding='utf-8')
+
+          plugin_java = Path('src/main/java/com/sagakenichi/freelifemarine/FreeLifeMarineMobsPlugin.java')
+          text = plugin_java.read_text(encoding='utf-8')
+          text = text.replace('FreeLifeMarineMobs 1.8.0 enabled:', 'FreeLifeMarineMobs 1.8.1 enabled:', 1)
+          plugin_java.write_text(text, encoding='utf-8')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          text = text.replace('Version 1.8.0 makes autonomous swimming more active and makes manual orca-show startup easier to diagnose and recover when the saved show center is wrong.',
+              'Version 1.8.1 fixes airborne gravity while retaining the more active autonomous swimming and show-start recovery added in 1.8.0.', 1)
+          text = text.replace('target/FreeLifeMarineMobs-1.8.0-Spigot-1.21.1.jar', 'target/FreeLifeMarineMobs-1.8.1-Spigot-1.21.1.jar')
+          gravity_note = '''\n## Airborne gravity fix\n\nAquatic movement control is now suspended whenever a shark or orca is outside water and still airborne. The plugin no longer rewrites vertical velocity every tick in that state, so the invisible living carrier and the visible model fall under normal Minecraft gravity. Scripted show guidance/holding is also water-only; deliberate breach launches still set the initial jump velocity, after which the airborne phase is gravity-driven. Landed animals may still use the restrained return-to-water controller. Crabs likewise stop scripted vertical control while airborne.\n'''
+          anchor = '\n## More active autonomous swimming\n'
+          if anchor not in text:
+              raise SystemExit('README gravity section anchor missing')
+          text = text.replace(anchor, gravity_note + anchor, 1)
+          readme.write_text(text, encoding='utf-8')
+
+          review = Path('REVIEW.md')
+          text = review.read_text(encoding='utf-8')
+          text += '''\n\n## 1.8.1 airborne-gravity hotfix\n\nThe 1.8.0 controller called `setGravity(true)`, but the out-of-water recovery path still wrote a small fixed Y velocity every tick. That repeatedly replaced the velocity that vanilla gravity was trying to accumulate and could make an airborne marine mob appear to wait in mid-air or descend unnaturally slowly. Version 1.8.1 separates three states: water (scripted swim controller allowed), grounded land (return-to-water controller allowed), and unsupported air (no scripted vertical velocity; native gravity only). Show guide/hold commands are also prevented from creating unintended flight outside water. Autonomous breach launches retain only their initial launch impulse and then use native gravity in the airborne phase.\n'''
+          review.write_text(text, encoding='utf-8')
+
+      - name: Commit patched sources
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add pom.xml README.md REVIEW.md src
+          git commit -m 'Restore native gravity while marine mobs are airborne'
+          git push origin HEAD:feature/fix-airborne-gravity-1.8.1
