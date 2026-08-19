@@ -7,6 +7,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
 
     private MarineMobService mobs;
     private OrcaShowManager shows;
+    private MarineFinalMotionController finalMotion;
 
     @Override
     public void onEnable() {
@@ -14,6 +15,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         MarineFood food = new MarineFood(this);
         mobs = new MarineMobService(this, food);
         shows = new OrcaShowManager(this, mobs);
+        finalMotion = new MarineFinalMotionController(this, mobs);
         MarineCommand command = new MarineCommand(mobs, food, shows);
         PluginCommand marine = getCommand("marine");
         if (marine == null) {
@@ -24,11 +26,15 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new MarineMobListener(mobs), this);
         mobs.start();
         shows.start();
-        getLogger().info("FreeLifeMarineMobs 1.8.1 enabled: more active autonomy and resilient manual show startup are active.");
+        finalMotion.start();
+        getLogger().info("FreeLifeMarineMobs 1.9.0 enabled: final airborne fall recovery and player-facing orca riding are active.");
     }
 
     @Override
     public void onDisable() {
+        if (finalMotion != null) {
+            finalMotion.shutdown();
+        }
         if (shows != null) {
             shows.shutdown();
         }
