@@ -1,83 +1,68 @@
-# FreeLifeMarineMobs 1.8.0 review
+# FreeLifeMarineMobs review
 
 Target: Spigot 1.21.1 / Java 21
 
-## Requested changes
+## 1.8 production-log findings
 
-- make autonomous swimming visibly more active;
-- investigate the attached production log where the orca show would not start;
-- preserve the existing smooth rendering, food pursuit, two-block-depth control, hitboxes, riding, show music, and show configuration commands.
+1. The repeated `CreatureSpawnEvent` stack traces came from Residence v6.0.2.4 using an incompatible CMILib version (`NoSuchFieldError` for `Version.v26_2_0`). FreeLifeMarineMobs can reduce unnecessary spawn events but cannot repair another plugin's binary dependency mismatch.
+2. The orca show definition itself loaded successfully.
+3. Manual show startup originally depended on the saved show center, so a wrong center could select zero tracked orcas without making the reason obvious in server logs. Version 1.8 added player-nearby fallback and diagnostics.
 
-## Production-log findings
+## 1.8 autonomous movement and show changes
 
-1. **The repeated stack traces are produced by Residence, not by the show controller.**
-   - The server reports `Could not pass event CreatureSpawnEvent to Residence v6.0.2.4`.
-   - The root cause is `java.lang.NoSuchFieldError`: Residence expects `net.Zrips.CMILib.Version.Version.v26_2_0`, but the loaded CMILib class does not contain that field.
-   - FreeLifeMarineMobs appears in the stack because it is spawning a Horse or ArmorStand that fires Bukkit's normal `CreatureSpawnEvent`; Residence then fails while handling that event.
-   - FreeLifeMarineMobs cannot safely patch another plugin's incompatible binary dependency. Residence and CMILib must be updated/downgraded as a mutually compatible pair on the server.
-
-2. **The show definition itself did load.**
-   - The log contains successful `Loaded 1 orca show definition(s).` messages after `/marine show reload`.
-   - The log contains several `/marine show start` and `/marine show start orca-show` commands without a FreeLifeMarineMobs exception immediately following them.
-
-3. **The log does not show a saved show center command.**
-   - The bundled default center is `world`, `(0.5, 63.0, 0.5)` with a 48-block control radius.
-   - If the spawned orcas were elsewhere, the old manual-start path selected zero orcas and returned that only to the command sender's chat, so the failure reason was not visible in the server log.
-
-## Version 1.8 design changes
-
-### More active autonomous swimming
-
-`MarineActivityProfile` makes normal roaming more energetic without keeping animals at maximum speed continuously:
-
-- Orca roaming: speed levels 4-7, with occasional short level-8 bursts.
-- Shark roaming: speed levels 4-6, with occasional level-7 bursts.
-- Orca intent duration: 50-120 ticks; yaw change up to about 55 degrees; stronger vertical intent.
-- Shark intent duration: 70-150 ticks; yaw change up to about 38 degrees.
-- Orca breach opportunity delay: 260-650 ticks.
-- Shark breach opportunity delay: 480-1200 ticks.
-- Orca breathing recurrence is shortened.
-
-Wall avoidance, two-block-depth holding, food pursuit, riding, and show control still override roaming when necessary.
-
-### Manual-show fallback and diagnostics
-
-Manual player starts now follow this order:
-
-1. try the saved show center and normal `control-radius`;
-2. if no orca is selected, search around the command player using at least a 96-block fallback radius;
-3. if an orca is found, use the player's location as a temporary center for that performance only;
-4. tell the operator to use `/marine show set-center` to persist the correct center.
-
-If no orca can be selected, the returned message includes the saved center, control radius, tracked usable-orca count, and nearest tracked-orca distance. Manual start results are also written to the server log.
-
-Scheduled shows remain strict: they still use the configured center and do not silently move the schedule's venue to a random player's location.
-
-### Residence-error reduction
-
-Previously an orca spawn immediately created the invisible Horse plus all seven extra ArmorStand passenger seats. Each living-entity spawn can fire events observed by Residence.
-
-Version 1.8 creates additional passenger ArmorStands only when a second through eighth rider actually needs a seat. This substantially reduces unnecessary `CreatureSpawnEvent` traffic at orca creation, but the Horse anchor itself still legitimately fires a spawn event, so an incompatible Residence/CMILib installation can still emit an error until those plugins are fixed.
-
-## Tests
-
-The new activity-profile tests verify:
-
-- orca roaming levels 4-7 and level-8 burst profile;
-- shark roaming levels 4-6 and level-7 burst profile;
-- shorter autonomous behavior windows;
-- shorter breach intervals;
-- wider orca turn intent.
-
-Existing show-schedule, shallow-water/gravity, pursuit, speed-level, hitbox, and mob-type tests remain.
-
-## Verification boundary
-
-CI can verify compilation against Spigot 1.21.1, deterministic activity-profile values, unit tests, JAR integrity, Java 21 class version 65, and packaging.
-
-CI cannot reproduce the user's exact Residence/CMILib JAR combination, prove that Residence stops logging errors after those third-party JARs are corrected, or judge the subjective activity level in a real Minecraft client. A staging-server E2E run remains required for those points.
-
+- Orca roaming: speed levels 4-7, occasional level-8 bursts.
+- Shark roaming: speed levels 4-6, occasional level-7 bursts.
+- Shorter intent windows and more frequent breach opportunities.
+- Manual show startup fallback around the command player.
+- Lazy creation of extra orca passenger ArmorStands.
 
 ## 1.8.1 airborne-gravity hotfix
 
-The 1.8.0 controller called `setGravity(true)`, but the out-of-water recovery path still wrote a small fixed Y velocity every tick. That repeatedly replaced the velocity that vanilla gravity was trying to accumulate and could make an airborne marine mob appear to wait in mid-air or descend unnaturally slowly. Version 1.8.1 separates three states: water (scripted swim controller allowed), grounded land (return-to-water controller allowed), and unsupported air (no scripted vertical velocity; native gravity only). Show guide/hold commands are also prevented from creating unintended flight outside water. Autonomous breach launches retain only their initial launch impulse and then use native gravity in the airborne phase.
+The 1.8.0 controller called `setGravity(true)`, but out-of-water recovery could still replace vertical velocity. Version 1.8.1 separated water, grounded land, and unsupported air so scripted vertical movement stopped outside water.
+
+## 1.9.0 final-motion controller
+
+The production server still reported airborne hovering. Version 1.9.0 added a final per-tick controller after normal marine AI, plus player-facing orca steering and a 56 blocks/s ridden-orca target (four times the previous 14 blocks/s maximum).
+
+The 1.9.0 fall recovery still relied on `Entity#setVelocity` to make the invisible Horse/Slime carrier actually change position. The user's live-server report after 1.9.0 shows that assumption is not sufficiently robust for this environment: the carrier may retain or accept a velocity value without producing the expected positional fall.
+
+## 1.9.1 deterministic manual airborne gravity
+
+Version 1.9.1 removes the remaining dependency on carrier-native velocity integration while the carrier is unsupported in air.
+
+The final controller now:
+
+1. detects a tracked marine carrier that is outside water and lacks solid support;
+2. captures its current horizontal and vertical velocity once on entry to air;
+3. temporarily disables carrier-native gravity for that airborne phase so two physics systems cannot fight each other;
+4. integrates gravity itself using `0.08` blocks/tick² and `0.98` vertical drag;
+5. applies the resulting position directly with `Entity#teleport` every tick;
+6. subdivides movement into at most 0.20-block sweep increments so a fast jump cannot skip through water or a solid block in one update;
+7. restores normal gravity and aquatic control immediately on water re-entry;
+8. restores normal gravity with zero velocity when a solid collision is reached.
+
+This is intentionally more deterministic than the 1.8.1 and 1.9.0 approaches. Even if the invisible Horse ignores velocity-based falling on the production server, its Y coordinate is explicitly changed during unsupported-air ticks.
+
+The visible BlockDisplay model and Interaction hitboxes remain follower entities driven from the carrier, so they inherit the carrier's corrected position on the next normal marine update tick.
+
+### Riding interaction
+
+Player-facing orca riding remains unchanged from 1.9.0:
+
+- the pilot's horizontal look direction controls travel in a two-block-deep pool;
+- deeper water allows limited pitch-based ascent/descent;
+- ridden-orca target speed remains 56 blocks/s (2.8 blocks/tick);
+- once the carrier is unsupported in air, rider propulsion yields to the deterministic airborne integrator.
+
+## Tests and verification boundary
+
+Unit tests cover:
+
+- ten-level marine speeds and the exact 20 blocks/s level-10 mapping;
+- 56 blocks/s ridden-orca tuning;
+- pursuit, activity, shallow-water, hitbox, and show-schedule behavior;
+- deterministic gravity turning a zero-vertical-velocity apex into descent;
+- continued acceleration over repeated airborne ticks;
+- sweep subdivision for large displacement.
+
+CI can verify compilation against Spigot 1.21.1, unit tests, JAR integrity, Java 21 class version 65, and packaging. It cannot reproduce the user's exact production server or prove the visual result of manual airborne teleport integration in a live Minecraft client. A staging-server E2E run is still required before claiming the production hover symptom is definitively eliminated.
