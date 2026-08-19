@@ -11,6 +11,8 @@ import java.util.Locale;
 
 public final class MarineCommand implements CommandExecutor, TabCompleter {
 
+    private static final List<String> MOB_NAMES = List.of("shark", "orca", "crab");
+
     private final MarineMobService mobs;
 
     public MarineCommand(MarineMobService mobs) {
@@ -24,18 +26,21 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length != 2 || !args[0].equalsIgnoreCase("spawn")) {
-            player.sendMessage("Usage: /" + label + " spawn <shark|orca>");
+            player.sendMessage("Usage: /" + label + " spawn <shark|orca|crab>");
             return true;
         }
 
         MarineMobType type = MarineMobType.fromInput(args[1]);
         if (type == null) {
-            player.sendMessage("Unknown marine mob. Use shark or orca.");
+            player.sendMessage("Unknown marine mob. Use shark, orca, or crab.");
             return true;
         }
 
-        mobs.spawn(player, type);
-        player.sendMessage("Spawned " + type.displayName() + " with 10 health. Right-click it to ride.");
+        MarineMobService.MarineMob mob = mobs.spawn(player, type);
+        String rideHint = type.rideable()
+                ? " Right-click it to ride (" + mob.seatCount() + " seat" + (mob.seatCount() == 1 ? "" : "s") + ")."
+                : " It moves on its own and is not rideable.";
+        player.sendMessage("Spawned " + type.displayName() + " with " + (int) type.maxHealth() + " health." + rideHint);
         return true;
     }
 
@@ -46,7 +51,7 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("spawn")) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
-            return List.of("shark", "orca").stream().filter(value -> value.startsWith(prefix)).toList();
+            return MOB_NAMES.stream().filter(value -> value.startsWith(prefix)).toList();
         }
         return List.of();
     }
