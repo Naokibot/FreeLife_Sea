@@ -26,6 +26,7 @@ import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -120,6 +121,10 @@ public final class MarineMobService {
         if (mob == null || !mob.anchor.isValid() || !mob.type.rideable()) {
             return false;
         }
+        if (mob.showControlled) {
+            player.sendMessage(mob.type.displayName() + " is currently performing in a show.");
+            return true;
+        }
         if (player.isInsideVehicle()) {
             return true;
         }
@@ -138,6 +143,123 @@ public final class MarineMobService {
 
         player.sendMessage(mob.type.displayName() + " has no free seats.");
         return true;
+    }
+
+    public List<MarineMob> nearbyOrcas(World world, Location center, double radius, int limit) {
+        if (world == null || center == null || center.getWorld() != world || radius <= 0.0 || limit <= 0) {
+            return List.of();
+        }
+        double radiusSquared = radius * radius;
+        return byAnchor.values().stream()
+                .filter(this::isUsable)
+                .filter(mob -> mob.type == MarineMobType.ORCA)
+                .filter(mob -> mob.anchor.getWorld().equals(world))
+                .filter(mob -> mob.anchor.getLocation().distanceSquared(center) <= radiusSquared)
+                .sorted(Comparator.comparingDouble(mob -> mob.anchor.getLocation().distanceSquared(center)))
+                .limit(limit)
+                .toList();
+    }
+
+    public boolean isUsable(MarineMob mob) {
+        return mob != null && mob.anchor.isValid() && !mob.anchor.isDead() && byAnchor.containsKey(mob.anchor.getUniqueId());
+    }
+
+    public void beginShowControl(MarineMob mob) {
+        if (!isUsable(mob) || mob.type != MarineMobType.ORCA) {
+            return;
+        }
+        mob.anchor.eject();
+        for (ArmorStand seat : mob.passengerSeats) {
+            if (seat.isValid()) {
+                seat.eject();
+            }
+        }
+        mob.showControlled = true;
+        mob.cachedWaterDirection = null;
+        mob.anchor.setGravity(false);
+        mob.anchor.setVelocity(new Vector());
+        if (mob.anchor instanceof Horse horse) {
+            horse.setAI(false);
+        }
+    }
+
+    public void endShowControl(MarineMob mob) {
+        if (!isUsable(mob)) {
+            return;
+        }
+        mob.showControlled = false;
+        mob.targetYaw = mob.anchor.getLocation().getYaw();
+        mob.turnTicks = randomTicks(80, 170);
+        mob.anchor.setGravity(!isWaterContact(mob.anchor.getLocation()));
+        if (mob.anchor instanceof Horse horse) {
+            horse.setAI(false);
+        }
+    }
+
+    public void guideShow(MarineMob mob, Location target, double speed) {
+        if (!isUsable(mob) || !mob.showControlled || target == null || target.getWorld() != mob.anchor.getWorld()) {
+            return;
+        }
+        Location current = mob.anchor.getLocation();
+        Vector delta = target.toVector().subtract(current.toVector());
+        double distance = delta.length();
+        if (distance < 0.35) {
+            holdShow(mob);
+            return;
+        }
+
+        Vector direction = delta.normalize();
+        double vertical = clamp(direction.getY() * speed, -0.16, 0.16);
+        direction.setY(0.0);
+        if (direction.lengthSquared() < DIRECTION_EPSILON) {
+            direction = forwardFromYaw(current.getYaw());
+        } else {
+            direction.normalize();
+        }
+
+        Vector velocity = direction.multiply(speed).setY(vertical);
+        mob.anchor.setGravity(false);
+        mob.anchor.setVelocity(velocity);
+        mob.anchor.setRotation(yawFromVector(direction), (float) clamp(-vertical * 120.0, -14.0, 14.0));
+    }
+
+    public void holdShow(MarineMob mob) {
+        if (!isUsable(mob) || !mob.showControlled) {
+            return;
+        }
+        Vector slowed = mob.anchor.getVelocity().multiply(0.28);
+        slowed.setY(0.0);
+        mob.anchor.setGravity(false);
+        mob.anchor.setVelocity(slowed);
+    }
+
+    public void launchShowJump(MarineMob mob, Location landing, double horizontalSpeed, double verticalVelocity) {
+        if (!isUsable(mob) || !mob.showControlled || landing == null || landing.getWorld() != mob.anchor.getWorld()) {
+            return;
+        }
+        Location current = mob.anchor.getLocation();
+        Vector horizontal = landing.toVector().subtract(current.toVector()).setY(0.0);
+        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
+            horizontal = forwardFromYaw(current.getYaw());
+        } else {
+            horizontal.normalize();
+        }
+        mob.anchor.setGravity(true);
+        mob.anchor.setVelocity(horizontal.clone().multiply(horizontalSpeed).setY(verticalVelocity));
+        mob.anchor.setRotation(yawFromVector(horizontal), -12.0F);
+    }
+
+    public void emitShowBlow(MarineMob mob) {
+        if (!isUsable(mob) || mob.type != MarineMobType.ORCA) {
+            return;
+        }
+        Location base = mob.anchor.getLocation();
+        World world = base.getWorld();
+        Vector forward = forwardFromYaw(base.getYaw());
+        Location blowhole = base.clone().add(forward.multiply(2.0)).add(0.0, 2.15, 0.0);
+        world.spawnParticle(Particle.CLOUD, blowhole, 28, 0.34, 0.85, 0.34, 0.035);
+        world.spawnParticle(Particle.SPLASH, blowhole, 18, 0.36, 0.30, 0.36, 0.07);
+        world.playSound(base, Sound.ENTITY_GENERIC_SPLASH, 1.25F, 1.15F);
     }
 
     public void shutdown() {
@@ -171,18 +293,24 @@ public final class MarineMobService {
             boolean inWater = isWaterContact(mob.anchor.getLocation());
             handleWaterTransition(mob, inWater);
 
-            Player pilot = nativePilot(mob.anchor);
-            if (mob.anchor instanceof Horse horse) {
-                horse.setAI(pilot != null);
-            }
-            if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
-                if (pilot != null) {
-                    moveWithNativeRider(mob, inWater);
-                } else {
-                    moveAquaticAutonomously(mob, inWater);
+            if (mob.showControlled) {
+                if (mob.anchor instanceof Horse horse) {
+                    horse.setAI(false);
                 }
             } else {
-                moveCrab(mob, inWater);
+                Player pilot = nativePilot(mob.anchor);
+                if (mob.anchor instanceof Horse horse) {
+                    horse.setAI(pilot != null);
+                }
+                if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
+                    if (pilot != null) {
+                        moveWithNativeRider(mob, inWater);
+                    } else {
+                        moveAquaticAutonomously(mob, inWater);
+                    }
+                } else {
+                    moveCrab(mob, inWater);
+                }
             }
 
             emitWakeAndBreath(mob, inWater);
@@ -660,6 +788,7 @@ public final class MarineMobService {
         private int sideDirection;
         private long nextBreathTick;
         private boolean wasInWater;
+        private boolean showControlled;
         private Vector cachedWaterDirection;
 
         private MarineMob(MarineMobType type, LivingEntity anchor, Interaction interaction,
@@ -681,5 +810,8 @@ public final class MarineMobService {
         public MarineMobType type() { return type; }
         public double health() { return health; }
         public int seatCount() { return type.seats().size(); }
+        public UUID id() { return anchor.getUniqueId(); }
+        public boolean showControlled() { return showControlled; }
+        public Location location() { return anchor.getLocation().clone(); }
     }
 }
