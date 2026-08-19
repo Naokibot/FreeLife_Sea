@@ -1,0 +1,136 @@
+name: Apply 1.8 active autonomy and show fix
+
+on:
+  push:
+    branches: [ feature/active-autonomy-show-fallback-1.8 ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/active-autonomy-show-fallback-1.8
+      - name: Apply integration patch
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def one(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          service_path = Path('src/main/java/com/sagakenichi/freelifemarine/MarineMobService.java')
+          service = service_path.read_text(encoding='utf-8')
+          service = one(service,
+              '        List<ArmorStand> passengerSeats = createPassengerSeats(world, spawn, type);',
+              '        List<ArmorStand> passengerSeats = new ArrayList<>();',
+              'lazy passenger seat initialization')
+          service = one(service,
+              '                randomTicks(160, 280)\n        );',
+              '                randomTicks(120, 220)\n        );',
+              'initial breath interval')
+          service = one(service,
+              '        player.sendMessage(mob.type.displayName() + " has no free seats.");\n        return true;',
+              '''        int extraSeatCount = Math.max(0, mob.type.seats().size() - 1);\n        if (mob.passengerSeats.size() < extraSeatCount) {\n            int seatOffsetIndex = mob.passengerSeats.size() + 1;\n            MarineMobType.SeatOffset offset = mob.type.seats().get(seatOffsetIndex);\n            Location seatLocation = relative(mob.anchor.getLocation(), offset.forward(), offset.up(), offset.right());\n            ArmorStand seat = createPassengerSeat(mob.anchor.getWorld(), seatLocation);\n            mob.passengerSeats.add(seat);\n            seat.addPassenger(player);\n            return true;\n        }\n\n        player.sendMessage(mob.type.displayName() + " has no free seats.");\n        return true;''',
+              'lazy seat mount')
+
+          marker = '    public boolean isUsable(MarineMob mob) {'
+          insertion = '''    public int usableOrcaCount(World world) {\n        if (world == null) {\n            return 0;\n        }\n        return (int) byAnchor.values().stream()\n                .filter(this::isUsable)\n                .filter(mob -> mob.type == MarineMobType.ORCA)\n                .filter(mob -> mob.anchor.getWorld().equals(world))\n                .count();\n    }\n\n    public double nearestOrcaDistance(World world, Location center) {\n        if (world == null || center == null || center.getWorld() != world) {\n            return Double.POSITIVE_INFINITY;\n        }\n        return byAnchor.values().stream()\n                .filter(this::isUsable)\n                .filter(mob -> mob.type == MarineMobType.ORCA)\n                .filter(mob -> mob.anchor.getWorld().equals(world))\n                .mapToDouble(mob -> Math.sqrt(mob.anchor.getLocation().distanceSquared(center)))\n                .min()\n                .orElse(Double.POSITIVE_INFINITY);\n    }\n\n'''
+          if service.count(marker) != 1:
+              raise SystemExit('orca diagnostic insertion marker mismatch')
+          service = service.replace(marker, insertion + marker, 1)
+
+          old_schedule = '''    private void scheduleNextJump(MarineMob mob) {\n        if (mob.type == MarineMobType.ORCA) {\n            mob.nextJumpTick = mob.ageTicks + randomTicks(500, 1200);\n        } else if (mob.type == MarineMobType.SHARK) {\n            mob.nextJumpTick = mob.ageTicks + randomTicks(900, 2200);\n        } else {\n            mob.nextJumpTick = Long.MAX_VALUE;\n        }\n    }\n\n    private void refreshNaturalIntent(MarineMob mob) {\n        Location location = mob.anchor.getLocation();\n        if (mob.type == MarineMobType.ORCA) {\n            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-38.0, 38.0)));\n            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 6);\n            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.024, 0.024);\n            mob.behaviorTicks = randomTicks(95, 220);\n        } else if (mob.type == MarineMobType.SHARK) {\n            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-24.0, 24.0)));\n            mob.speedLevel = MarineSpeedLevel.randomBetween(3, 5);\n            mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-0.012, 0.012);\n            mob.behaviorTicks = randomTicks(130, 270);\n        } else {\n            mob.targetYaw = normalizeYaw((float) (location.getYaw() + ThreadLocalRandom.current().nextDouble(-30.0, 30.0)));\n            mob.speedLevel = MarineSpeedLevel.LEVEL_1;\n            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.65, 1.0);\n            mob.behaviorTicks = randomTicks(70, 150);\n        }\n    }'''
+          new_schedule = '''    private void scheduleNextJump(MarineMob mob) {\n        if (mob.type == MarineMobType.CRAB) {\n            mob.nextJumpTick = Long.MAX_VALUE;\n            return;\n        }\n        mob.nextJumpTick = mob.ageTicks + randomTicks(\n                MarineActivityProfile.minJumpDelayTicks(mob.type),\n                MarineActivityProfile.maxJumpDelayTicksExclusive(mob.type));\n    }\n\n    private void refreshNaturalIntent(MarineMob mob) {\n        Location location = mob.anchor.getLocation();\n        if (mob.type == MarineMobType.CRAB) {\n            double turn = MarineActivityProfile.maxYawChange(mob.type);\n            mob.targetYaw = normalizeYaw((float) (location.getYaw()\n                    + ThreadLocalRandom.current().nextDouble(-turn, turn)));\n            mob.speedLevel = MarineSpeedLevel.LEVEL_1;\n            mob.cruiseFactor = ThreadLocalRandom.current().nextDouble(0.72, 1.0);\n            mob.behaviorTicks = randomTicks(\n                    MarineActivityProfile.minBehaviorTicks(mob.type),\n                    MarineActivityProfile.maxBehaviorTicksExclusive(mob.type));\n            return;\n        }\n\n        double turn = MarineActivityProfile.maxYawChange(mob.type);\n        mob.targetYaw = normalizeYaw((float) (location.getYaw()\n                + ThreadLocalRandom.current().nextDouble(-turn, turn)));\n        mob.speedLevel = MarineSpeedLevel.randomBetween(\n                MarineActivityProfile.minRoamLevel(mob.type),\n                MarineActivityProfile.maxRoamLevel(mob.type));\n        double vertical = MarineActivityProfile.verticalIntentRange(mob.type);\n        mob.verticalIntent = ThreadLocalRandom.current().nextDouble(-vertical, vertical);\n        mob.behaviorTicks = randomTicks(\n                MarineActivityProfile.minBehaviorTicks(mob.type),\n                MarineActivityProfile.maxBehaviorTicksExclusive(mob.type));\n\n        if (ThreadLocalRandom.current().nextDouble() < MarineActivityProfile.burstChance(mob.type)) {\n            mob.speedLevel = MarineSpeedLevel.of(MarineActivityProfile.burstLevel(mob.type));\n            mob.behaviorTicks = Math.min(mob.behaviorTicks, randomTicks(28, 62));\n        }\n    }'''
+          service = one(service, old_schedule, new_schedule, 'active autonomy profile')
+          service = one(service,
+              '            mob.nextBreathTick = mob.ageTicks + randomTicks(180, 320);',
+              '            mob.nextBreathTick = mob.ageTicks + randomTicks(140, 240);',
+              'breath recurrence')
+
+          seat_pattern = re.compile(r'    private static List<ArmorStand> createPassengerSeats\(World world, Location spawn, MarineMobType type\) \{.*?^    \}\n\n    private void remove\(MarineMob mob\) \{', re.S | re.M)
+          seat_replacement = '''    private static ArmorStand createPassengerSeat(World world, Location spawn) {\n        return world.spawn(spawn, ArmorStand.class, stand -> {\n            stand.setVisible(false);\n            stand.setSmall(true);\n            stand.setMarker(true);\n            stand.setGravity(false);\n            stand.setPersistent(false);\n            stand.setInvulnerable(true);\n            stand.setSilent(true);\n            stand.setBasePlate(false);\n            stand.setArms(false);\n        });\n    }\n\n    private void remove(MarineMob mob) {'''
+          service, count = seat_pattern.subn(seat_replacement, service, count=1)
+          if count != 1:
+              raise SystemExit(f'lazy seat helper: expected one method, found {count}')
+          service = one(service,
+              '            this.passengerSeats = List.copyOf(passengerSeats);',
+              '            this.passengerSeats = new ArrayList<>(passengerSeats);',
+              'mutable lazy seat list')
+          service_path.write_text(service, encoding='utf-8')
+
+          manager_path = Path('src/main/java/com/sagakenichi/freelifemarine/OrcaShowManager.java')
+          manager = manager_path.read_text(encoding='utf-8')
+          start_pattern = re.compile(r'    public String startShow\(String requestedId\) \{.*?^    \}\n\n    public String stopShow\(\) \{', re.S | re.M)
+          start_replacement = '''    public String startShow(String requestedId) {\n        return startShowInternal(requestedId, null, false);\n    }\n\n    public String startShow(String requestedId, Player initiator) {\n        String result = startShowInternal(requestedId, initiator, true);\n        plugin.getLogger().info("Manual orca show request: " + result);\n        return result;\n    }\n\n    private String startShowInternal(String requestedId, Player initiator, boolean allowPlayerFallback) {\n        if (active != null) {\n            return "A show is already running: " + active.definition.id + ".";\n        }\n        ShowDefinition definition = findDefinition(requestedId);\n        if (definition == null) {\n            return unknownShow();\n        }\n\n        World configuredWorld = Bukkit.getWorld(definition.worldName);\n        Location runtimeCenter = configuredWorld == null ? null : definition.center(configuredWorld);\n        List<MarineMobService.MarineMob> selected = configuredWorld == null\n                ? List.of()\n                : mobs.nearbyOrcas(configuredWorld, runtimeCenter, definition.controlRadius, definition.orcaCount);\n        boolean usedPlayerFallback = false;\n\n        if (selected.isEmpty() && allowPlayerFallback && initiator != null) {\n            World playerWorld = initiator.getWorld();\n            Location playerCenter = initiator.getLocation().clone();\n            playerCenter.setYaw(definition.headingYaw);\n            playerCenter.setPitch(0.0F);\n            double fallbackRadius = Math.max(definition.controlRadius, 96.0);\n            List<MarineMobService.MarineMob> nearbyPlayerOrcas = mobs.nearbyOrcas(\n                    playerWorld, playerCenter, fallbackRadius, definition.orcaCount);\n            if (!nearbyPlayerOrcas.isEmpty()) {\n                configuredWorld = playerWorld;\n                runtimeCenter = playerCenter;\n                selected = nearbyPlayerOrcas;\n                usedPlayerFallback = true;\n            }\n        }\n\n        if (selected.isEmpty()) {\n            if (configuredWorld == null || runtimeCenter == null) {\n                return "Show world '" + definition.worldName + "' is not loaded and no spawned orcas were found near you.";\n            }\n            int tracked = mobs.usableOrcaCount(configuredWorld);\n            double nearest = mobs.nearestOrcaDistance(configuredWorld, runtimeCenter);\n            String nearestText = Double.isFinite(nearest)\n                    ? String.format(Locale.ROOT, "%.1f blocks", nearest)\n                    : "none";\n            return "Show not started: 0 orcas are within " + trim(definition.controlRadius)\n                    + " blocks of center " + formatCenter(runtimeCenter) + ". Tracked orcas in world: "\n                    + tracked + "; nearest: " + nearestText\n                    + ". Stand near the orcas and run /marine show start again, or save the center with /marine show set-center.";\n        }\n\n        for (MarineMobService.MarineMob mob : selected) {\n            mobs.beginShowControl(mob);\n        }\n        active = new ActiveShow(definition, selected, runtimeCenter);\n        announce(runtimeCenter, definition.audienceRadius,\n                "§b§lOrca Show §f- §e" + definition.id + " §fhas started!", definition.musicVolume);\n        if (usedPlayerFallback) {\n            return "Started show '" + definition.id + "' with " + selected.size()\n                    + " orca(s) using your location as a temporary center. Use /marine show set-center to save this center.";\n        }\n        return "Started show '" + definition.id + "' with " + selected.size() + " orca(s).";\n    }\n\n    public String stopShow() {'''
+          manager, count = start_pattern.subn(start_replacement, manager, count=1)
+          if count != 1:
+              raise SystemExit(f'show start patch: expected one method, found {count}')
+          manager = one(manager,
+              '''        World world = Bukkit.getWorld(current.definition.worldName);\n        if (world != null) {\n            announce(current.definition.center(world), current.definition.audienceRadius,\n                    "§bOrca Show §f- " + reason, current.definition.musicVolume);\n        }''',
+              '''        Location center = current.center();\n        if (center.getWorld() != null) {\n            announce(center, current.definition.audienceRadius,\n                    "§bOrca Show §f- " + reason, current.definition.musicVolume);\n        }''',
+              'show stop runtime center')
+          manager = one(manager,
+              '''        World world = Bukkit.getWorld(show.definition.worldName);\n        if (world == null) {\n            stopShow("Show world unloaded; show cancelled.");\n            return;\n        }''',
+              '''        Location runtimeCenter = show.center();\n        World world = runtimeCenter.getWorld();\n        if (world == null || Bukkit.getWorld(world.getName()) == null) {\n            stopShow("Show world unloaded; show cancelled.");\n            return;\n        }''',
+              'show runtime world')
+          manager = one(manager,
+              '        Location center = show.definition.center(world);',
+              '        Location center = runtimeCenter;',
+              'show runtime center')
+          active_old = '''    private static final class ActiveShow {\n        private final ShowDefinition definition;\n        private final List<MarineMobService.MarineMob> orcas;\n        private int tick;\n        private int musicBeat;\n        private boolean blowDone;\n\n        private ActiveShow(ShowDefinition definition, List<MarineMobService.MarineMob> orcas) {\n            this.definition = definition;\n            this.orcas = new ArrayList<>(orcas);\n        }\n    }'''
+          active_new = '''    private static final class ActiveShow {\n        private final ShowDefinition definition;\n        private final List<MarineMobService.MarineMob> orcas;\n        private final Location runtimeCenter;\n        private int tick;\n        private int musicBeat;\n        private boolean blowDone;\n\n        private ActiveShow(ShowDefinition definition, List<MarineMobService.MarineMob> orcas, Location runtimeCenter) {\n            this.definition = definition;\n            this.orcas = new ArrayList<>(orcas);\n            this.runtimeCenter = runtimeCenter.clone();\n        }\n\n        private Location center() {\n            return runtimeCenter.clone();\n        }\n    }'''
+          manager = one(manager, active_old, active_new, 'active show runtime center')
+          trim_marker = '''    private static String trim(double value) {\n        return value == Math.rint(value) ? Integer.toString((int) value) : Double.toString(value);\n    }'''
+          trim_new = '''    private static String formatCenter(Location center) {\n        return center.getWorld().getName() + " ("\n                + trim(roundCoordinate(center.getX())) + ", "\n                + trim(roundCoordinate(center.getY())) + ", "\n                + trim(roundCoordinate(center.getZ())) + ")";\n    }\n\n    private static String trim(double value) {\n        return value == Math.rint(value) ? Integer.toString((int) value) : Double.toString(value);\n    }'''
+          manager = one(manager, trim_marker, trim_new, 'show center formatter')
+          manager_path.write_text(manager, encoding='utf-8')
+
+          command_path = Path('src/main/java/com/sagakenichi/freelifemarine/MarineCommand.java')
+          command = command_path.read_text(encoding='utf-8')
+          command = one(command,
+              '            case "start" -> sender.sendMessage(shows.startShow(args.length >= 3 ? args[2] : null));',
+              '''            case "start" -> {\n                String id = args.length >= 3 ? args[2] : null;\n                if (sender instanceof Player player) {\n                    sender.sendMessage(shows.startShow(id, player));\n                } else {\n                    sender.sendMessage(shows.startShow(id));\n                }\n            }''',
+              'manual show player fallback')
+          command_path.write_text(command, encoding='utf-8')
+
+          replacements = {
+              'pom.xml': [('1.7.0', '1.8.0')],
+              'src/main/resources/plugin.yml': [('1.7.0', '1.8.0')],
+              'src/main/java/com/sagakenichi/freelifemarine/FreeLifeMarineMobsPlugin.java': [
+                  ('1.7.0', '1.8.0'),
+                  ('smoother rendering, faster food pursuit, shallow-water holding, and denser hitboxes are active.',
+                   'more active autonomy and resilient manual show startup are active.')],
+              '.github/workflows/build.yml': [('1.7.0', '1.8.0')],
+          }
+          for filename, pairs in replacements.items():
+              p = Path(filename)
+              text = p.read_text(encoding='utf-8')
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f'{filename}: missing {old!r}')
+                  text = text.replace(old, new)
+              p.write_text(text, encoding='utf-8')
+
+          build = Path('.github/workflows/build.yml')
+          build_text = build.read_text(encoding='utf-8')
+          build_text = one(build_text,
+              "          jar tf \"$JAR\" | grep -q 'MarinePursuitProfile.class$'",
+              "          jar tf \"$JAR\" | grep -q 'MarinePursuitProfile.class$'\n          jar tf \"$JAR\" | grep -q 'MarineActivityProfile.class$'",
+              'activity class jar check')
+          build.write_text(build_text, encoding='utf-8')
+      - name: Commit integration patch
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add src pom.xml .github/workflows/build.yml
+          git commit -m 'Make autonomous swimming more active and harden show startup'
+          git push origin HEAD:feature/active-autonomy-show-fallback-1.8
