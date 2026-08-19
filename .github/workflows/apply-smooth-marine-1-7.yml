@@ -1,0 +1,86 @@
+name: Apply smooth marine movement patch
+
+on:
+  push:
+    branches: [ feature/smooth-food-shallow-hitboxes-1.7 ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/smooth-food-shallow-hitboxes-1.7
+      - name: Patch MarineMobService
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/main/java/com/sagakenichi/freelifemarine/MarineMobService.java')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '            emitWakeAndBreath(mob, inWater);\n            updateFollowers(mob);\n            if ((mob.ageTicks & 1L) == 0L) {\n                updateDisplays(mob);\n            }',
+                  '            emitWakeAndBreath(mob, inWater);\n            updateFollowers(mob);\n            updateDisplays(mob);'
+              ),
+              (
+                  '        mob.nextFoodScanTick = mob.ageTicks + 6L;',
+                  '        mob.nextFoodScanTick = mob.ageTicks + MarinePursuitProfile.foodScanIntervalTicks();'
+              ),
+              (
+                  '        desired.setY(MarineWaterPhysics.swimmingVertical(swimVertical));',
+                  '        double controlledVertical = MarineWaterPhysics.shallowHeightHold(\n                MarineWaterPhysics.swimmingVertical(swimVertical),\n                isWaterAt(location.clone().add(0.0, 1.0, 0.0)),\n                isWaterAt(location),\n                isWaterAt(location.clone().add(0.0, -1.0, 0.0)),\n                isWaterAt(location.clone().add(0.0, -2.0, 0.0)));\n        desired.setY(controlledVertical);'
+              ),
+              (
+                  '        float targetYaw = yawFromVector(horizontal);\n        float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.45F);\n        MarineSpeedLevel level = mob.type == MarineMobType.ORCA\n                ? MarineSpeedLevel.LEVEL_7 : MarineSpeedLevel.LEVEL_6;\n        double speed = level.blocksPerTick();',
+                  '        float targetYaw = yawFromVector(horizontal);\n        float yaw = turnTowards(location.getYaw(), targetYaw, mob.type.autonomousTurnRate() * 1.75F);\n        MarineSpeedLevel level = MarinePursuitProfile.speedLevel(mob.type, horizontalDistance);\n        double speed = level.blocksPerTick();'
+              ),
+              (
+                  '        double vertical = targetInWater\n                ? MarineWaterPhysics.swimmingVertical(clamp(delta.getY() * 0.08, -0.060, 0.060))\n                : 0.0;',
+                  '        double vertical = targetInWater\n                ? MarineWaterPhysics.shallowHeightHold(\n                        MarineWaterPhysics.swimmingVertical(clamp(delta.getY() * 0.10, -0.070, 0.070)),\n                        isWaterAt(location.clone().add(0.0, 1.0, 0.0)),\n                        isWaterAt(location),\n                        isWaterAt(location.clone().add(0.0, -1.0, 0.0)),\n                        isWaterAt(location.clone().add(0.0, -2.0, 0.0)))\n                : 0.0;'
+              ),
+              (
+                  '        Vector desired = forwardFromYaw(yaw).multiply(speed).setY(vertical);\n        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, mob.type.autonomousAcceleration() * 1.35);',
+                  '        Vector desired = forwardFromYaw(yaw).multiply(speed).setY(vertical);\n        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired,\n                mob.type.autonomousAcceleration() * MarinePursuitProfile.accelerationMultiplier(mob.type));'
+              ),
+              (
+                  '        if (foodTarget != null) {\n            speed *= 1.15;\n        }',
+                  '        if (foodTarget != null) {\n            speed *= 1.55;\n        }'
+              ),
+              (
+                  '    private void updateDisplays(MarineMob mob) {\n        Location base = mob.anchor.getLocation();\n        float yaw = base.getYaw();\n        double verticalVelocity = mob.anchor.getVelocity().getY();\n        float pitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC\n                ? (float) clamp(-verticalVelocity * 38.0, -18.0, 18.0)\n                : 0.0F;',
+                  '    private void updateDisplays(MarineMob mob) {\n        Location base = mob.anchor.getLocation();\n        float visualTurnRate = mob.type == MarineMobType.CRAB ? 10.0F : 6.5F;\n        mob.visualYaw = turnTowards(mob.visualYaw, base.getYaw(), visualTurnRate);\n        float yaw = mob.visualYaw;\n        double verticalVelocity = mob.anchor.getVelocity().getY();\n        float targetPitch = mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC\n                ? (float) clamp(-verticalVelocity * 38.0, -18.0, 18.0)\n                : 0.0F;\n        mob.visualPitch += (targetPitch - mob.visualPitch) * 0.38F;\n        float pitch = mob.visualPitch;'
+              ),
+              (
+                  '                entity.setInterpolationDuration(2);\n                entity.setTeleportDuration(2);',
+                  '                entity.setInterpolationDuration(2);\n                entity.setTeleportDuration(1);'
+              ),
+              (
+                  '        private boolean shallowJump;',
+                  '        private boolean shallowJump;\n        private float visualYaw;\n        private float visualPitch;'
+              ),
+              (
+                  '            this.health = health;\n            this.targetYaw = targetYaw;',
+                  '            this.health = health;\n            this.targetYaw = targetYaw;\n            this.visualYaw = targetYaw;'
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, found {count}: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+      - name: Commit patch
+        run: |
+          git config user.name 'Hotaru(Naokibot)'
+          git config user.email 'sagakatsuyuki.555@gmail.com'
+          git add src/main/java/com/sagakenichi/freelifemarine/MarineMobService.java
+          git commit -m 'Smooth marine motion and speed up food pursuit'
+          git push origin HEAD:feature/smooth-food-shallow-hitboxes-1.7
