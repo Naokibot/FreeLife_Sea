@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   patch:
+    # Temporary PR-only helper. Removed before merge.
     if: github.head_ref == 'feature/active-autonomy-show-fallback-1.8' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
