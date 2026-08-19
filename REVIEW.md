@@ -1,58 +1,68 @@
-# FreeLifeMarineMobs 1.6.0 review
+# FreeLifeMarineMobs 1.7.0 review
 
 Target: Spigot 1.21.1 / Java 21
 
 ## Requested changes
 
-- keep gravity enabled for the added marine mobs;
-- support a pool whose usable water depth is only two blocks.
+- reduce visibly jerky movement;
+- make marine mobs approach thrown marine food faster;
+- add a dedicated height-holding controller for a two-block-deep pool;
+- add more hitbox coverage;
+- document the show-start command.
 
 ## Review findings and design choices
 
-1. **The 1.5 autonomous controller disabled gravity underwater.**
-   - Normal autonomous swimming used `setGravity(false)` while in water.
-   - Show-guided swimming and holding also disabled gravity.
-   - Version 1.6 keeps gravity enabled on the living movement carrier during ordinary swimming, show control, jump preparation, airborne motion, re-entry, and native riding.
+1. **Two-tick visual updates were the main visible source of stepping at high speed.**
+   - At speed level 10 the carrier can travel 1.0 block per tick.
+   - Updating BlockDisplay positions only every two ticks can therefore create a two-block visual step before interpolation.
+   - Version 1.7 updates displays every tick and uses a one-tick teleport duration.
+   - Transformation interpolation remains active for body/tail animation.
 
-2. **Gravity-on swimming needs active lift, not a static no-gravity state.**
-   - `MarineWaterPhysics` adds a small `0.035` block/tick upward swimming component while an aquatic animal is actively controlling depth in water.
-   - This lift is added to the animal's biological vertical intent; it does not turn gravity off.
-   - Jump preparation uses explicit downward/upward thrust and therefore does not use the ordinary swimming lift.
+2. **Carrier rotation and visual rotation should not be identical at every instant.**
+   - The carrier must react immediately for navigation.
+   - The visible body now keeps a separate smoothed yaw/pitch state and eases toward carrier rotation.
+   - This reduces snapping without slowing the actual AI response.
 
-3. **The old breach-start test was too deep for a two-block pool.**
-   - Version 1.5 required water one and two blocks below the current position.
-   - In a two-water-layer pool the second probe can already be the floor, so valid shallow pools could fail the test.
-   - Version 1.6 requires the current water layer plus one water layer below. A non-water block two levels below marks the pool as shallow rather than invalid.
+3. **Food response was delayed by both scanning and conservative speed selection.**
+   - The food scan interval is reduced from six ticks to two ticks.
+   - Orcas use level 9 at long range, level 8 at medium range and level 6 for final approach.
+   - Sharks use levels 8, 7 and 5 respectively.
+   - Pursuit acceleration is increased, while the lower final-approach tier limits overshoot.
+   - Crab food movement is also increased while preserving sideways locomotion.
 
-4. **A full-length dive would hit the floor in shallow water.**
-   - Deep-water orcas retain the existing 24-tick dive preparation; deep-water sharks retain 18 ticks.
-   - In a detected two-block pool both use a four-tick shallow preparation at only `-0.020` vertical velocity, roughly 0.08 block of commanded descent before upward acceleration.
-   - Shallow charge time is also shortened to 32 ticks and upward charge thrust is increased so the animal can transition from the shallow preparation into the existing breach launch without needing extra depth.
+4. **Two-block pools need continuous height holding, not only shallow jump preparation.**
+   - Version 1.6 shortened the breach pre-dive but ordinary swimming could still drift into the lower layer.
+   - Version 1.7 detects the lower layer (water above, floor below) and applies a stronger upward recovery.
+   - In the upper layer, vertical command is clamped to reduce repeated surface/floor oscillation.
+   - Gravity stays enabled; this is active swimming control rather than no-gravity hovering.
 
-5. **Show swimming must follow the same gravity rule.**
-   - `guideShow` and `holdShow` now keep gravity enabled.
-   - When the show-controlled orca is in water, the same swimming-lift term is applied so it can hold the intended show path without reverting to `setGravity(false)`.
-   - Show jump launch already used gravity and remains gravity-driven in air.
+5. **Existing hitbox segmentation still left avoidable targeting gaps.**
+   - Orca coverage increases from 6 to 10 overlapping segments.
+   - Shark coverage increases from 5 to 8.
+   - Crab coverage increases from 3 to 5, including body and claw-side coverage.
+   - Hitboxes remain `Interaction` entities for attack/right-click resolution, not solid push bodies.
 
-6. **Movement carriers explicitly declare gravity.**
-   - Invisible Horse carriers for sharks/orcas and the Slime carrier for crabs now explicitly call `setGravity(true)` at creation.
-   - Display entities and marker passenger seats remain non-gravity visual/follower components; gravity applies to the living movement carrier that defines the custom mob's physical trajectory.
+6. **Show start should remain simple.**
+   - `/marine show start` starts the first configured show.
+   - `/marine show start orca-show` explicitly starts the default `orca-show` definition.
+   - The existing show center/time/facing commands are unchanged.
 
 ## Tests
 
-The unit suite now additionally checks:
+The unit suite now additionally verifies:
 
-- two water layers are accepted as sufficient shallow-pool depth;
-- current-water plus one-below-water is required;
-- the shallow-water dive is four ticks;
-- shallow dive vertical command is `-0.020`;
-- shallow charge time is 32 ticks;
-- the normal swimming lift is `0.035` block/tick and composes with vertical intent.
+- lower-layer upward recovery in a two-block pool;
+- upper-layer vertical clamp;
+- far/medium/final food pursuit speed selection;
+- two-tick food scanning;
+- increased pursuit acceleration;
+- 10 orca, 8 shark and 5 crab hitbox segments;
+- positive hitbox dimensions for every custom mob.
 
-Existing speed-level, hitbox, mob-type, and show-schedule tests remain.
+Existing speed-level, gravity/shallow-water, mob-type and show-schedule tests remain.
 
 ## Verification boundary
 
-CI can verify source compatibility, the shallow-water decision logic, constants, tests, JAR integrity, Java 21 class version, and packaging.
+CI can prove source/API compatibility, deterministic profile calculations, unit tests, JAR structure, Java class version and dependency packaging.
 
-It cannot prove the exact result of live Horse/Slime water physics, server tick timing, or pool geometry. A staging server is still required to confirm that gravity-on depth holding looks natural, the animal does not visibly clip a two-block-deep floor during jump preparation, and 3-10 block breach trajectories land correctly in the actual aquarium.
+CI cannot prove subjective client smoothness or the exact result of Horse/Slime water physics in a specific aquarium. A staging server remains necessary to judge visible jitter at 20 blocks/s, two-block-pool floor clearance, high-speed food approach near walls, and whether the denser targeting hitboxes feel continuous in actual combat/interaction.
