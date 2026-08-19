@@ -1,9 +1,9 @@
 name: FreeLifeMarineMobs
-version: '1.5.0'
+version: '1.6.0'
 main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
 api-version: '1.21'
 author: Naokibot
-description: Command-only animated marine mobs with ten speed tiers, autonomous jumps, segmented hitboxes, marine food attraction, riding, and scheduled orca shows.
+description: Command-only animated marine mobs with gravity-aware swimming, shallow-pool jumps, ten speed tiers, autonomous jumps, segmented hitboxes, marine food attraction, riding, and scheduled orca shows.
 commands:
   marine:
     description: Manage FreeLife marine mobs, marine food, and orca shows.

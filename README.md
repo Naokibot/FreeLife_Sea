@@ -2,7 +2,7 @@
 
 FreeLifeMarineMobs is a standalone Spigot 1.21.1 plugin for command-only animated shark, orca, and crab entities.
 
-Version 1.5.0 adds ten discrete swimming-speed levels, faster orca movement, autonomous breaches up to 10 blocks high, and segmented interaction/attack hitboxes for every custom marine mob.
+Version 1.6.0 keeps Minecraft gravity enabled for living marine-mob carriers and adds explicit compatibility for pools that are only two water blocks deep.
 
 ## Requirements
 
@@ -25,7 +25,26 @@ There is no natural spawn path, spawn egg, recipe, or scheduled mob spawn. All p
 
 Sharks and orcas keep native mounted steering through an invisible tamed saddled horse pilot carrier. The orca still supports eight players: one pilot and seven passenger seats.
 
-Version 1.5 raises mounted-water speed limits as well: the orca can be assisted up to speed level 7 (14 blocks/s) and the shark up to level 6 (12 blocks/s), while normal Horse input still controls steering.
+The orca can be assisted up to speed level 7 (14 blocks/s) and the shark up to level 6 (12 blocks/s), while normal Horse input still controls steering.
+
+## Gravity-aware swimming
+
+The living movement carriers now keep `setGravity(true)` during normal autonomous swimming, show-controlled swimming, riding, jump preparation, airborne motion, and water re-entry.
+
+Swimming no longer depends on disabling gravity. Instead, active aquatic movement adds a small upward swimming force while gravity continues to act. This keeps falling/jump arcs physical while still allowing sharks and orcas to hold depth in water.
+
+The crab also continues to use normal gravity while walking on the floor.
+
+## Two-block-deep pool support
+
+Autonomous breach preparation no longer requires water two full blocks below the mob. A valid shallow pool only needs:
+
+- water at the animal's current layer; and
+- water one block below it.
+
+If the block two levels below is no longer water, the controller treats the pool as shallow. In that case the pre-jump dive is reduced to four ticks at only `-0.020` vertical velocity before the animal accelerates upward. This is designed to prevent the orca or shark from driving into the floor of a two-block-deep pool.
+
+Deep pools keep the longer dive preparation used previously.
 
 ## Ten swimming-speed levels
 
@@ -57,29 +76,29 @@ The autonomous controller deliberately changes level instead of staying at maxim
 
 ## Autonomous swimming and breaching
 
-Autonomous aquatic mobs keep the natural-intent controller introduced in 1.4: gradual steering, blended acceleration/deceleration, depth intent, species-specific behavior, food attraction, and water-edge avoidance.
+Autonomous aquatic mobs use gradual steering, blended acceleration/deceleration, depth intent, species-specific behavior, food attraction, water-edge avoidance, and gravity-aware vertical swimming force.
 
-Version 1.5 adds autonomous breach behavior:
+A breach sequence is:
 
-1. The animal must be near a usable water surface with enough depth below and clear space above.
-2. It performs a short dive.
-3. It accelerates upward using a higher speed level.
-4. It breaks the surface with gravity enabled.
-5. It follows a ballistic arc and re-enters the water.
-6. The existing splash/bubble transition effects run on exit and re-entry.
-7. Normal autonomous swimming resumes after landing.
+1. confirm a usable surface, two-layer water depth, and clear space above;
+2. perform a short dive, shortened further in a two-block pool;
+3. accelerate upward using a high speed level;
+4. break the surface with gravity already enabled;
+5. follow a ballistic arc;
+6. re-enter the water with splash/bubble effects;
+7. resume ordinary autonomous swimming.
 
-Orcas choose breach heights from 3 through 10 blocks. Sharks breach less often and use smaller 2-5 block jumps. The 10-block orca jump uses a capped launch velocity intended to peak at approximately 10 blocks under normal Minecraft entity gravity; it is not allowed to exceed the configured 10-block ceiling by the plugin.
+Orcas choose breach targets from 3 through 10 blocks. Sharks breach less often and use smaller 2-5 block jumps. The 10-block orca jump remains a design target under normal Minecraft entity physics rather than a claim of pixel-exact apex height on every live server.
 
 ## Segmented hitboxes
 
-All three custom marine mobs now have explicit `Interaction` hitboxes that follow the animated body:
+All three custom marine mobs have explicit `Interaction` hitboxes that follow the animated body:
 
 - Orca: 6 body segments.
 - Shark: 5 body segments.
 - Crab: 3 segments covering body and claws.
 
-These hitboxes are registered back to the owning marine mob, so right-click feeding/riding and attack targeting can resolve the custom mob across more of its visible body instead of relying on one oversized central box. They are interaction/attack hitboxes, not solid physics bodies; the invisible movement carrier remains non-collidable so it does not shove players or interfere with pool geometry.
+These hitboxes resolve feeding, riding, and attack targeting. They are interaction/attack hitboxes, not solid physics bodies; the invisible movement carrier remains non-collidable so it does not shove players or snag on pool geometry.
 
 ## Marine food
 
@@ -102,13 +121,13 @@ The command creates a PDC-tagged cod item named `海の餌`. Renaming ordinary c
 
 The renderer remains pure Spigot `BlockDisplay`; no resource pack or third-party mesh is bundled.
 
-The orca uses more than 60 display parts and the shark more than 50. Their existing segmented bodies, ventral surfaces, markings, fins, peduncles, tail/fluke animation, water-entry splashes, wake effects, and orca breathing effects are retained.
+The orca uses more than 60 display parts and the shark more than 50. Their segmented bodies, ventral surfaces, markings, fins, peduncles, tail/fluke animation, water-entry splashes, wake effects, and orca breathing effects are retained.
 
 The crab remains at the smaller 1.35-block-scale profile introduced in 1.4.
 
 ## Orca shows
 
-Existing show behavior remains available, including formation swimming, high-speed passes, jump waves, synchronized blow/splash cues, note-block music, and return to normal autonomy. Show movement speeds are now quantized to the same ten-level speed system.
+Existing show behavior remains available, including formation swimming, high-speed passes, jump waves, synchronized blow/splash cues, note-block music, and return to normal autonomy. Show-guided swimming now also keeps gravity enabled and uses swimming lift while the animal is in water.
 
 ### Configure a show entirely in Minecraft
 
@@ -138,11 +157,11 @@ mvn -B verify
 Output:
 
 ```text
-target/FreeLifeMarineMobs-1.5.0-Spigot-1.21.1.jar
+target/FreeLifeMarineMobs-1.6.0-Spigot-1.21.1.jar
 ```
 
 ## Verification boundary
 
 GitHub Actions compiles and tests against the declared Spigot 1.21.1 API, validates the JAR, verifies Java 21 class version 65, and checks that Bukkit classes are not shaded into the plugin.
 
-CI can verify speed-level math, hitbox profiles, source/API compatibility, and packaging. A real Minecraft staging server is still required to judge whether 20-block/s bursts feel appropriate for a specific pool, whether a nominal 10-block breach clears the actual build safely, whether attack targeting feels continuous between segmented hitboxes, and whether mounted passengers remain comfortable during extreme motion.
+CI can verify the shallow-water profile and gravity-control code paths. A real Minecraft staging server is still required to measure actual depth holding with Horse water physics, confirm that a two-block-deep pool never causes visible floor clipping, and measure the exact breach apex/landing path in the target aquarium.

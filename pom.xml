@@ -6,7 +6,7 @@
 
     <groupId>com.sagakenichi</groupId>
     <artifactId>freelife-marine-mobs</artifactId>
-    <version>1.5.0</version>
+    <version>1.6.0</version>
     <name>FreeLifeMarineMobs</name>
 
     <properties>
@@ -39,7 +39,7 @@
     </dependencies>
 
     <build>
-        <finalName>FreeLifeMarineMobs-1.5.0-Spigot-1.21.1</finalName>
+        <finalName>FreeLifeMarineMobs-1.6.0-Spigot-1.21.1</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
