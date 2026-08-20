@@ -25,9 +25,9 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Final per-tick motion pass for behavior that must win after the normal marine AI.
  * Airborne movement is integrated manually so carrier physics cannot leave an animal
- * suspended. Ridden orcas follow the pilot's three-dimensional gaze while in water.
- * Autonomous aquatic movement also receives a final speed floor and independent breach
- * scheduler so high activity cannot be cancelled by an earlier controller in the tick.
+ * suspended. Ridden orcas move in the rider's gaze direction only when the native horse
+ * input indicates forward movement. Autonomous aquatic movement also receives a final
+ * speed floor and independent breach scheduler.
  */
 final class MarineFinalMotionController {
 
@@ -35,6 +35,8 @@ final class MarineFinalMotionController {
     private static final double SUPPORT_PROBE = 0.10;
     private static final double DEEP_RIDER_MAX_VERTICAL = 0.85;
     private static final double SHALLOW_RIDER_MAX_VERTICAL = 0.12;
+    private static final double BREACH_RIDER_MAX_VERTICAL = 0.95;
+    private static final double RIDDEN_SWEEP_STEP = 0.24;
 
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
@@ -138,7 +140,7 @@ final class MarineFinalMotionController {
         }
 
         Location location = entity.getLocation();
-        if (!isNearSurface(location)
+        if (!isWithinOneBlockOfSurface(location)
                 || !hasClearJumpColumn(location, MarineJumpProfile.clearanceBlocks(mob.type()))) {
             nextAutonomousBreachTick.put(id, serverTick + 20L);
             return false;
@@ -254,8 +256,12 @@ final class MarineFinalMotionController {
     }
 
     private void steerRiddenOrca(Horse horse, Player pilot) {
-        horse.setAI(false);
-        horse.setGravity(true);
+        // Spigot 1.21.1 does not expose Player#getCurrentInput(). Read the short native
+        // horse movement impulse before replacing it; only a component pointing forward
+        // relative to the rider's look direction is treated as W-equivalent input.
+        Vector nativeVelocity = horse.getVelocity();
+        Vector nativeHorizontal = nativeVelocity.clone().setY(0.0);
+        double nativeHorizontalSpeed = nativeHorizontal.length();
 
         Vector look = pilot.getEyeLocation().getDirection();
         if (look.lengthSquared() < DIRECTION_EPSILON) {
@@ -263,14 +269,38 @@ final class MarineFinalMotionController {
         } else {
             look.normalize();
         }
+        Vector lookHorizontal = look.clone().setY(0.0);
+        if (lookHorizontal.lengthSquared() < DIRECTION_EPSILON) {
+            lookHorizontal = forwardFromYaw(pilot.getLocation().getYaw());
+        } else {
+            lookHorizontal.normalize();
+        }
+
+        double alignment = nativeHorizontalSpeed < DIRECTION_EPSILON
+                ? -1.0
+                : nativeHorizontal.clone().normalize().dot(lookHorizontal);
+        boolean forwardInput = MarineMotionTuning.hasForwardRiderIntent(
+                nativeHorizontalSpeed, alignment);
+
+        horse.setAI(true);
+        horse.setGravity(false);
+        if (!forwardInput) {
+            horse.setVelocity(new Vector());
+            horse.setRotation(pilot.getLocation().getYaw(),
+                    (float) clamp(pilot.getLocation().getPitch(), -70.0, 70.0));
+            return;
+        }
 
         Location location = horse.getLocation();
         double speed = MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK;
         boolean shallow = shallowPool(location);
-        double maxVertical = shallow ? SHALLOW_RIDER_MAX_VERTICAL : DEEP_RIDER_MAX_VERTICAL;
+        boolean breachReady = isWithinOneBlockOfSurface(location) && look.getY() > 0.20;
+        double maxVertical = breachReady
+                ? BREACH_RIDER_MAX_VERTICAL
+                : shallow ? SHALLOW_RIDER_MAX_VERTICAL : DEEP_RIDER_MAX_VERTICAL;
         double vertical = clamp(look.getY() * speed, -maxVertical, maxVertical);
 
-        if (shallow) {
+        if (shallow && !breachReady) {
             if (vertical > 0.0 && !isWaterAt(location.clone().add(0.0, 0.85, 0.0))) {
                 vertical = Math.min(vertical, 0.035);
             }
@@ -279,18 +309,31 @@ final class MarineFinalMotionController {
             }
         }
 
-        Vector horizontal = look.clone().setY(0.0);
-        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
-            horizontal = forwardFromYaw(pilot.getLocation().getYaw());
-        } else {
-            horizontal.normalize();
-        }
         double horizontalSpeed = Math.sqrt(Math.max(0.0, speed * speed - vertical * vertical));
-        Vector target = horizontal.multiply(horizontalSpeed).setY(vertical);
+        Vector displacement = lookHorizontal.multiply(horizontalSpeed).setY(vertical);
+        Location destination = sweepRiddenMove(location, displacement);
+        destination.setYaw(pilot.getLocation().getYaw());
+        destination.setPitch((float) clamp(pilot.getLocation().getPitch(), -70.0, 70.0));
+        horse.teleport(destination);
 
-        horse.setVelocity(target);
-        horse.setRotation(pilot.getLocation().getYaw(),
-                (float) clamp(pilot.getLocation().getPitch(), -70.0, 70.0));
+        // Keep the next tick's native movement impulse clean so W release, A/D, and S
+        // cannot inherit the plugin-applied travel velocity from this tick.
+        horse.setVelocity(new Vector());
+    }
+
+    private static Location sweepRiddenMove(Location start, Vector displacement) {
+        int steps = Math.max(1, (int) Math.ceil(displacement.length() / RIDDEN_SWEEP_STEP));
+        Vector increment = displacement.clone().multiply(1.0 / steps);
+        Location current = start.clone();
+        Location lastSafe = start.clone();
+        for (int i = 0; i < steps; i++) {
+            current.add(increment);
+            if (collidesAt(current)) {
+                return lastSafe;
+            }
+            lastSafe = current.clone();
+        }
+        return current;
     }
 
     private static Player firstPlayerPassenger(Entity entity) {
@@ -308,9 +351,12 @@ final class MarineFinalMotionController {
                 && !isWaterAt(location.clone().add(0.0, -2.0, 0.0));
     }
 
-    private static boolean isNearSurface(Location location) {
-        return isWaterAt(location)
-                && !isWaterAt(location.clone().add(0.0, 1.35, 0.0));
+    private static boolean isWithinOneBlockOfSurface(Location location) {
+        if (!isWaterAt(location)) {
+            return false;
+        }
+        return !isWaterAt(location.clone().add(0.0, 1.35, 0.0))
+                || !isWaterAt(location.clone().add(0.0, 2.05, 0.0));
     }
 
     private static boolean hasClearJumpColumn(Location location, int height) {
