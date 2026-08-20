@@ -41,8 +41,8 @@ final class MarineNaturalBehaviorController {
     private static final double STRONG_VERTICAL_MANEUVER = 0.075;
     private static final double BODY_MARGIN = 0.10;
     private static final double WAYPOINT_REACHED_DISTANCE = 2.5;
-    private static final int WAYPOINT_STAGNANT_TICKS = 50;
-    private static final double WAYPOINT_PROGRESS_EPSILON = 0.12;
+    private static final int WAYPOINT_STAGNANT_TICKS = 24;
+    private static final double WAYPOINT_PROGRESS_EPSILON = 0.08;
     private static final double[] WATER_SEARCH_ANGLES = {
             0.0, 18.0, -18.0, 36.0, -36.0, 60.0, -60.0,
             90.0, -90.0, 135.0, -135.0, 180.0
@@ -90,16 +90,21 @@ final class MarineNaturalBehaviorController {
 
                 breakCollidingBoats(entity, mob.type());
 
-                if (mob.showControlled() || hasPlayerPassenger(entity)) {
+                if (mob.showControlled() || mob.commandControlled() || hasPlayerPassenger(entity)) {
+                    swimStates.remove(id);
                     continue;
                 }
                 Location location = entity.getLocation();
                 if (!isWaterContact(location)) {
+                    swimStates.remove(id);
                     continue;
                 }
 
                 Vector velocity = entity.getVelocity();
                 if (Math.abs(velocity.getY()) > STRONG_VERTICAL_MANEUVER) {
+                    // A breach/jump relocates the animal. Discard the old waypoint so the
+                    // first swimming tick after landing starts with a fresh roaming target.
+                    swimStates.remove(id);
                     continue;
                 }
 
@@ -118,8 +123,15 @@ final class MarineNaturalBehaviorController {
         Vector velocity = entity.getVelocity();
         double currentSpeed = Math.hypot(velocity.getX(), velocity.getZ());
 
-        if (state.isStagnating(location)) {
+        boolean stagnating = state.isStagnating(location);
+        int bodyCollisionScore = MarineCollisionGeometry.bodyCollisionScore(location, mob.type());
+        if (stagnating || bodyCollisionScore > 0) {
             state.invalidateRoamTarget();
+            Vector escape = findEscapeDirection(location, velocity, mob.type(), bodyCollisionScore);
+            if (escape != null) {
+                applyEscapeMotion(entity, mob, state, escape, velocity);
+                return;
+            }
         }
         if (state.needsRoamTarget(location, serverTick)) {
             state.setRoamTarget(chooseRoamTarget(location, mob.type()), mob.type(), serverTick);
@@ -147,6 +159,12 @@ final class MarineNaturalBehaviorController {
         Vector direction = findOpenWaterDirection(location, preferred, mob.type());
         if (direction == null) {
             state.invalidateRoamTarget();
+            Vector escape = findEscapeDirection(location, velocity, mob.type(), bodyCollisionScore);
+            if (escape != null) {
+                applyEscapeMotion(entity, mob, state, escape, velocity);
+            } else {
+                entity.setVelocity(velocity.clone().multiply(0.20));
+            }
             return;
         }
 
@@ -204,8 +222,9 @@ final class MarineNaturalBehaviorController {
             Location candidate = origin.clone()
                     .add(travel.multiply(distance))
                     .add(0.0, y, 0.0);
+            candidate.setYaw(yawFromVector(travel));
             Location water = nearestWaterLayer(candidate);
-            if (water != null) {
+            if (water != null && !MarineCollisionGeometry.bodyCollides(water, type)) {
                 return water;
             }
         }
@@ -226,7 +245,8 @@ final class MarineNaturalBehaviorController {
     }
 
     private static Vector findOpenWaterDirection(Location location, Vector preferred, MarineMobType type) {
-        double probeDistance = type == MarineMobType.ORCA ? 1.85 : 1.55;
+        double nearProbe = type == MarineMobType.ORCA ? 0.75 : 0.60;
+        double farProbe = type == MarineMobType.ORCA ? 1.65 : 1.25;
         Vector unit = preferred.clone().setY(0.0);
         if (unit.lengthSquared() < DIRECTION_EPSILON) {
             unit = forwardFromYaw(location.getYaw());
@@ -234,16 +254,94 @@ final class MarineNaturalBehaviorController {
             unit.normalize();
         }
 
+        int currentScore = MarineCollisionGeometry.bodyCollisionScore(location, type);
+        Vector improvingDirection = null;
+        int bestScore = currentScore;
+
         for (double degrees : WATER_SEARCH_ANGLES) {
             Vector candidate = rotateY(unit, Math.toRadians(degrees)).normalize();
-            Location ahead = location.clone().add(candidate.clone().multiply(probeDistance));
-            if (isWaterAt(ahead)
-                    || isWaterAt(ahead.clone().add(0.0, -0.65, 0.0))
-                    || isWaterAt(ahead.clone().add(0.0, 0.45, 0.0))) {
-                return candidate;
+            Location near = location.clone().add(candidate.clone().multiply(nearProbe));
+            Location far = location.clone().add(candidate.clone().multiply(farProbe));
+            float candidateYaw = yawFromVector(candidate);
+            near.setYaw(candidateYaw);
+            far.setYaw(candidateYaw);
+            if (!hasWaterRoom(near) || !hasWaterRoom(far)) {
+                continue;
+            }
+
+            if (currentScore == 0) {
+                if (!MarineCollisionGeometry.bodyCollides(near, type)
+                        && !MarineCollisionGeometry.bodyCollides(far, type)) {
+                    return candidate;
+                }
+                continue;
+            }
+
+            int candidateScore = MarineCollisionGeometry.bodyCollisionScore(far, type);
+            if (candidateScore < bestScore) {
+                bestScore = candidateScore;
+                improvingDirection = candidate;
+                if (candidateScore == 0) {
+                    return candidate;
+                }
             }
         }
-        return null;
+        return improvingDirection;
+    }
+
+    private static Vector findEscapeDirection(Location location, Vector velocity,
+                                              MarineMobType type, int currentScore) {
+        Vector base = velocity.clone().setY(0.0);
+        if (base.lengthSquared() < DIRECTION_EPSILON) {
+            base = forwardFromYaw(location.getYaw());
+        } else {
+            base.normalize();
+        }
+
+        // Try turning away from the present heading first. The large angles prevent a
+        // stranded animal from repeatedly nudging the same wall.
+        double[] escapeAngles = {180.0, 145.0, -145.0, 110.0, -110.0, 75.0, -75.0, 40.0, -40.0};
+        Vector best = null;
+        int bestScore = currentScore > 0 ? currentScore : Integer.MAX_VALUE;
+        for (double degrees : escapeAngles) {
+            Vector candidate = rotateY(base, Math.toRadians(degrees)).normalize();
+            Location near = location.clone().add(candidate.clone().multiply(0.85));
+            Location far = location.clone().add(candidate.clone().multiply(2.10));
+            float candidateYaw = yawFromVector(candidate);
+            near.setYaw(candidateYaw);
+            far.setYaw(candidateYaw);
+            if (!hasWaterRoom(near) || !hasWaterRoom(far)) {
+                continue;
+            }
+            int score = MarineCollisionGeometry.bodyCollisionScore(far, type);
+            if (currentScore == 0 && score == 0) {
+                return candidate;
+            }
+            if (score < bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private static boolean hasWaterRoom(Location location) {
+        return isWaterAt(location)
+                || isWaterAt(location.clone().add(0.0, -0.65, 0.0))
+                || isWaterAt(location.clone().add(0.0, 0.45, 0.0));
+    }
+
+    private void applyEscapeMotion(Entity entity, MarineMobService.MarineMob mob, SwimState state,
+                                   Vector escape, Vector previousVelocity) {
+        double minimumSpeed = MarineSpeedLevel.of(
+                MarineNaturalMotionProfile.continuousCruiseLevel(mob.type())).blocksPerTick();
+        double currentSpeed = Math.hypot(previousVelocity.getX(), previousVelocity.getZ());
+        double escapeSpeed = clamp(Math.max(minimumSpeed, currentSpeed * 0.72), 0.12, 0.42);
+        double vertical = clamp(previousVelocity.getY(), -0.025, 0.025);
+        Vector motion = escape.clone().multiply(escapeSpeed).setY(vertical);
+        entity.setVelocity(motion);
+        entity.setRotation(yawFromVector(motion), 0.0F);
+        state.invalidateRoamTarget();
     }
 
     private void breakCollidingBoats(Entity anchor, MarineMobType type) {
