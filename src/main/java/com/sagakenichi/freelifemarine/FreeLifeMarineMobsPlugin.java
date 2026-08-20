@@ -9,6 +9,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
     private OrcaShowManager shows;
     private MarineFinalMotionController finalMotion;
     private MarineNaturalBehaviorController naturalBehavior;
+    private OrcaShowEnhancementController showEnhancement;
 
     @Override
     public void onEnable() {
@@ -18,6 +19,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         shows = new OrcaShowManager(this, mobs);
         finalMotion = new MarineFinalMotionController(this, mobs);
         naturalBehavior = new MarineNaturalBehaviorController(this, mobs);
+        showEnhancement = new OrcaShowEnhancementController(this, mobs);
         MarineCommand command = new MarineCommand(mobs, food, shows);
         PluginCommand marine = getCommand("marine");
         if (marine == null) {
@@ -30,11 +32,15 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         shows.start();
         finalMotion.start();
         naturalBehavior.start();
+        showEnhancement.start();
         getLogger().info("FreeLifeMarineMobs 1.10.0 enabled: continuous natural autonomy, boat-impact breaking, high breaches, deterministic air gravity, and 3D gaze riding are active.");
     }
 
     @Override
     public void onDisable() {
+        if (showEnhancement != null) {
+            showEnhancement.shutdown();
+        }
         if (naturalBehavior != null) {
             naturalBehavior.shutdown();
         }
