@@ -25,9 +25,9 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Final per-tick motion pass for behavior that must win after the normal marine AI.
  * Airborne movement is integrated manually so carrier physics cannot leave an animal
- * suspended. Ridden orcas move in the rider's gaze direction only when the native horse
- * input indicates forward movement. Autonomous aquatic movement also receives a final
- * speed floor and independent breach scheduler.
+ * suspended. Ridden orcas follow the pilot's three-dimensional gaze while in water.
+ * Autonomous aquatic movement also receives a final speed floor and independent breach
+ * scheduler so high activity cannot be cancelled by an earlier controller in the tick.
  */
 final class MarineFinalMotionController {
 
@@ -85,7 +85,7 @@ final class MarineFinalMotionController {
                     if (entity instanceof Horse horse) {
                         horse.setAI(false);
                     }
-                    integrateAirborne(entity);
+                    integrateAirborne(entity, mob.type());
                     continue;
                 }
 
@@ -201,14 +201,14 @@ final class MarineFinalMotionController {
         entity.setVelocity(boosted);
     }
 
-    private void integrateAirborne(Entity entity) {
+    private void integrateAirborne(Entity entity, MarineMobType type) {
         UUID id = entity.getUniqueId();
         AirState state = airborne.computeIfAbsent(id, ignored -> AirState.from(entity.getVelocity()));
         entity.setGravity(false);
 
         state.vertical = MarineAirKinematics.nextVerticalVelocity(state.vertical);
         Vector displacement = new Vector(state.horizontalX, state.vertical, state.horizontalZ);
-        MoveResult result = sweepMove(entity.getLocation(), displacement);
+        MoveResult result = sweepMove(entity.getLocation(), displacement, type);
 
         if (result.enteredWater) {
             entity.teleport(result.location);
@@ -235,7 +235,7 @@ final class MarineFinalMotionController {
         state.horizontalZ = MarineAirKinematics.nextHorizontalVelocity(state.horizontalZ);
     }
 
-    private static MoveResult sweepMove(Location start, Vector displacement) {
+    private static MoveResult sweepMove(Location start, Vector displacement, MarineMobType type) {
         int steps = MarineAirKinematics.sweepSteps(
                 displacement.getX(), displacement.getY(), displacement.getZ());
         Vector increment = displacement.clone().multiply(1.0 / steps);
@@ -247,7 +247,7 @@ final class MarineFinalMotionController {
             if (isStrictWaterContact(current)) {
                 return new MoveResult(current.clone(), true, false);
             }
-            if (collidesAt(current)) {
+            if (collidesAt(current) || MarineCollisionGeometry.bodyCollides(current, type)) {
                 return new MoveResult(lastSafe, false, true);
             }
             lastSafe = current.clone();
@@ -256,9 +256,6 @@ final class MarineFinalMotionController {
     }
 
     private void steerRiddenOrca(Horse horse, Player pilot) {
-        // Spigot 1.21.1 does not expose Player#getCurrentInput(). Read the short native
-        // horse movement impulse before replacing it; only a component pointing forward
-        // relative to the rider's look direction is treated as W-equivalent input.
         Vector nativeVelocity = horse.getVelocity();
         Vector nativeHorizontal = nativeVelocity.clone().setY(0.0);
         double nativeHorizontalSpeed = nativeHorizontal.length();
@@ -311,25 +308,37 @@ final class MarineFinalMotionController {
 
         double horizontalSpeed = Math.sqrt(Math.max(0.0, speed * speed - vertical * vertical));
         Vector displacement = lookHorizontal.multiply(horizontalSpeed).setY(vertical);
-        Location destination = sweepRiddenMove(location, displacement);
+        Location destination = sweepRiddenMove(location, displacement, pilot.getLocation().getYaw());
         destination.setYaw(pilot.getLocation().getYaw());
         destination.setPitch((float) clamp(pilot.getLocation().getPitch(), -70.0, 70.0));
         horse.teleport(destination);
-
-        // Keep the next tick's native movement impulse clean so W release, A/D, and S
-        // cannot inherit the plugin-applied travel velocity from this tick.
         horse.setVelocity(new Vector());
     }
 
-    private static Location sweepRiddenMove(Location start, Vector displacement) {
+    private static Location sweepRiddenMove(Location start, Vector displacement, float travelYaw) {
         int steps = Math.max(1, (int) Math.ceil(displacement.length() / RIDDEN_SWEEP_STEP));
         Vector increment = displacement.clone().multiply(1.0 / steps);
         Location current = start.clone();
         Location lastSafe = start.clone();
+
+        // If an orca is already partly inside terrain, allow movement that reduces the
+        // overlap so the rider can escape instead of becoming permanently pinned.
+        int toleratedBodyScore = MarineCollisionGeometry.bodyCollisionScore(start, MarineMobType.ORCA);
         for (int i = 0; i < steps; i++) {
             current.add(increment);
+            current.setYaw(travelYaw);
             if (collidesAt(current)) {
                 return lastSafe;
+            }
+            int bodyScore = MarineCollisionGeometry.bodyCollisionScore(current, MarineMobType.ORCA);
+            if (toleratedBodyScore == 0) {
+                if (bodyScore > 0) {
+                    return lastSafe;
+                }
+            } else if (bodyScore > toleratedBodyScore) {
+                return lastSafe;
+            } else {
+                toleratedBodyScore = Math.min(toleratedBodyScore, bodyScore);
             }
             lastSafe = current.clone();
         }
