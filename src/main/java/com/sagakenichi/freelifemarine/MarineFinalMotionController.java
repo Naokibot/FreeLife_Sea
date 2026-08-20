@@ -20,11 +20,14 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Final per-tick motion pass for behavior that must win after the normal marine AI.
  * Airborne movement is integrated manually so carrier physics cannot leave an animal
  * suspended. Ridden orcas follow the pilot's three-dimensional gaze while in water.
+ * Autonomous aquatic movement also receives a final speed floor and independent breach
+ * scheduler so high activity cannot be cancelled by an earlier controller in the tick.
  */
 final class MarineFinalMotionController {
 
@@ -36,6 +39,9 @@ final class MarineFinalMotionController {
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
     private final Map<UUID, AirState> airborne = new HashMap<>();
+    private final Map<UUID, Long> nextAutonomousBreachTick = new HashMap<>();
+    private final Map<UUID, BreachLaunch> breachLaunches = new HashMap<>();
+    private long serverTick;
     private BukkitTask task;
 
     MarineFinalMotionController(JavaPlugin plugin, MarineMobService mobs) {
@@ -53,9 +59,12 @@ final class MarineFinalMotionController {
             task = null;
         }
         airborne.clear();
+        nextAutonomousBreachTick.clear();
+        breachLaunches.clear();
     }
 
     private void tick() {
+        serverTick++;
         Set<UUID> seen = new HashSet<>();
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntitiesByClasses(Horse.class, Slime.class)) {
@@ -63,12 +72,14 @@ final class MarineFinalMotionController {
                 if (mob == null || !mob.id().equals(entity.getUniqueId())) {
                     continue;
                 }
-                seen.add(entity.getUniqueId());
+                UUID id = entity.getUniqueId();
+                seen.add(id);
 
                 Location location = entity.getLocation();
                 boolean inWater = isStrictWaterContact(location);
                 boolean supported = entity.isOnGround() || hasSolidSupport(location);
                 if (!inWater && !supported) {
+                    breachLaunches.remove(id);
                     if (entity instanceof Horse horse) {
                         horse.setAI(false);
                     }
@@ -76,22 +87,116 @@ final class MarineFinalMotionController {
                     continue;
                 }
 
-                airborne.remove(entity.getUniqueId());
+                airborne.remove(id);
                 entity.setGravity(true);
 
-                if (!(entity instanceof Horse horse) || mob.type() != MarineMobType.ORCA) {
+                Player pilot = entity instanceof Horse horse ? firstPlayerPassenger(horse) : null;
+                if (pilot != null && mob.type() == MarineMobType.ORCA && inWater && !mob.showControlled()) {
+                    breachLaunches.remove(id);
+                    steerRiddenOrca((Horse) entity, pilot);
                     continue;
                 }
 
-                Player pilot = firstPlayerPassenger(horse);
-                if (pilot == null || !inWater || mob.showControlled()) {
+                if (!inWater || mob.showControlled() || pilot != null
+                        || mob.type().movementStyle() != MarineMobType.MovementStyle.AQUATIC) {
+                    breachLaunches.remove(id);
                     continue;
                 }
 
-                steerRiddenOrca(horse, pilot);
+                BreachLaunch activeLaunch = breachLaunches.get(id);
+                if (activeLaunch != null) {
+                    if (activeLaunch.waterTicksRemaining > 0) {
+                        entity.setGravity(true);
+                        entity.setVelocity(new Vector(
+                                activeLaunch.horizontalX,
+                                activeLaunch.vertical,
+                                activeLaunch.horizontalZ));
+                        activeLaunch.waterTicksRemaining--;
+                        continue;
+                    }
+                    breachLaunches.remove(id);
+                }
+
+                if (tryStartAutonomousBreach(entity, mob)) {
+                    continue;
+                }
+
+                applyAutonomousSpeedFloor(entity, mob);
             }
         }
         airborne.keySet().retainAll(seen);
+        nextAutonomousBreachTick.keySet().retainAll(seen);
+        breachLaunches.keySet().retainAll(seen);
+    }
+
+    private boolean tryStartAutonomousBreach(Entity entity, MarineMobService.MarineMob mob) {
+        UUID id = entity.getUniqueId();
+        long next = nextAutonomousBreachTick.computeIfAbsent(id,
+                ignored -> serverTick + randomBreachDelay(mob.type()));
+        if (serverTick < next) {
+            return false;
+        }
+
+        Location location = entity.getLocation();
+        if (!isNearSurface(location)
+                || !hasClearJumpColumn(location, MarineJumpProfile.clearanceBlocks(mob.type()))) {
+            nextAutonomousBreachTick.put(id, serverTick + 20L);
+            return false;
+        }
+
+        int height = ThreadLocalRandom.current().nextInt(
+                MarineJumpProfile.minHeightBlocks(mob.type()),
+                MarineJumpProfile.maxHeightExclusive(mob.type()));
+        int speedLevel = MarineJumpProfile.speedLevelForHeight(mob.type(), height);
+        double horizontalSpeed = MarineSpeedLevel.of(speedLevel).blocksPerTick();
+        Vector forward = forwardFromYaw(entity.getLocation().getYaw());
+        double vertical = MarineJumpProfile.initialVerticalVelocity(height);
+
+        BreachLaunch launch = new BreachLaunch(
+                forward.getX() * horizontalSpeed,
+                vertical,
+                forward.getZ() * horizontalSpeed,
+                3);
+        breachLaunches.put(id, launch);
+        nextAutonomousBreachTick.put(id, serverTick + randomBreachDelay(mob.type()));
+        entity.setGravity(true);
+        entity.setVelocity(new Vector(launch.horizontalX, launch.vertical, launch.horizontalZ));
+        return true;
+    }
+
+    private static long randomBreachDelay(MarineMobType type) {
+        int min = MarineActivityProfile.minJumpDelayTicks(type);
+        int maxExclusive = MarineActivityProfile.maxJumpDelayTicksExclusive(type);
+        if (min == Integer.MAX_VALUE || maxExclusive == Integer.MAX_VALUE) {
+            return Long.MAX_VALUE / 4;
+        }
+        return ThreadLocalRandom.current().nextInt(min, maxExclusive);
+    }
+
+    private static void applyAutonomousSpeedFloor(Entity entity, MarineMobService.MarineMob mob) {
+        Vector velocity = entity.getVelocity();
+        double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
+        double minimum = MarineSpeedLevel.of(MarineActivityProfile.minRoamLevel(mob.type())).blocksPerTick();
+        if (horizontalSpeed >= minimum * 0.92) {
+            return;
+        }
+
+        Vector direction = velocity.clone().setY(0.0);
+        if (direction.lengthSquared() < DIRECTION_EPSILON) {
+            direction = forwardFromYaw(entity.getLocation().getYaw());
+        } else {
+            direction.normalize();
+        }
+
+        Location ahead = entity.getLocation().clone().add(direction.clone().multiply(1.4));
+        if (!isWaterAt(ahead) && !isWaterAt(ahead.clone().add(0.0, -0.65, 0.0))) {
+            return;
+        }
+
+        double targetSpeed = Math.min(minimum,
+                horizontalSpeed + Math.max(0.08, minimum * 0.22));
+        Vector boosted = direction.multiply(targetSpeed).setY(velocity.getY());
+        entity.setVelocity(boosted);
     }
 
     private void integrateAirborne(Entity entity) {
@@ -203,6 +308,21 @@ final class MarineFinalMotionController {
                 && !isWaterAt(location.clone().add(0.0, -2.0, 0.0));
     }
 
+    private static boolean isNearSurface(Location location) {
+        return isWaterAt(location)
+                && !isWaterAt(location.clone().add(0.0, 1.35, 0.0));
+    }
+
+    private static boolean hasClearJumpColumn(Location location, int height) {
+        for (int y = 1; y <= height; y++) {
+            Block block = location.clone().add(0.0, y, 0.0).getBlock();
+            if (block.getType().isSolid() && !block.isPassable()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean hasSolidSupport(Location location) {
         Location probe = location.clone().add(0.0, -SUPPORT_PROBE, 0.0);
         Block block = probe.getBlock();
@@ -257,6 +377,20 @@ final class MarineFinalMotionController {
 
         private static AirState from(Vector velocity) {
             return new AirState(velocity.getX(), velocity.getY(), velocity.getZ());
+        }
+    }
+
+    private static final class BreachLaunch {
+        private final double horizontalX;
+        private final double vertical;
+        private final double horizontalZ;
+        private int waterTicksRemaining;
+
+        private BreachLaunch(double horizontalX, double vertical, double horizontalZ, int waterTicksRemaining) {
+            this.horizontalX = horizontalX;
+            this.vertical = vertical;
+            this.horizontalZ = horizontalZ;
+            this.waterTicksRemaining = waterTicksRemaining;
         }
     }
 
