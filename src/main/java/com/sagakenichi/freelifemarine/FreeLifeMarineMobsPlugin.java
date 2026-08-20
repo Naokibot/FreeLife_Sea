@@ -27,7 +27,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         mobs.start();
         shows.start();
         finalMotion.start();
-        getLogger().info("FreeLifeMarineMobs 1.9.1 enabled: deterministic manual air gravity and player-facing orca riding are active.");
+        getLogger().info("FreeLifeMarineMobs 1.10.0 enabled: high-activity autonomy, 3-13 block orca breaches, deterministic air gravity, and 3D gaze riding are active.");
     }
 
     @Override
