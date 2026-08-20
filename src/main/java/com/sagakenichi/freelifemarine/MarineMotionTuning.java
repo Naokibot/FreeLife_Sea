@@ -2,17 +2,24 @@ package com.sagakenichi.freelifemarine;
 
 final class MarineMotionTuning {
 
-    static final double PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND = 14.0;
-    static final double ORCA_RIDDEN_SPEED_MULTIPLIER = 4.0;
+    static final double PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND = 56.0;
+    static final double ORCA_RIDDEN_SPEED_SCALE = 0.60;
     static final double ORCA_RIDDEN_BLOCKS_PER_SECOND =
-            PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND * ORCA_RIDDEN_SPEED_MULTIPLIER;
+            PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND * ORCA_RIDDEN_SPEED_SCALE;
     static final double ORCA_RIDDEN_BLOCKS_PER_TICK = ORCA_RIDDEN_BLOCKS_PER_SECOND / 20.0;
 
+    private static final double RIDER_INPUT_MIN_SPEED = 0.018;
+    private static final double RIDER_FORWARD_ALIGNMENT = 0.40;
     private static final double STALL_MINIMUM_DESCENT = -0.025;
     private static final double STALL_MAX_VERTICAL_VELOCITY = 0.15;
     private static final double FALL_KICK = 0.18;
 
     private MarineMotionTuning() {
+    }
+
+    static boolean hasForwardRiderIntent(double horizontalSpeed, double forwardAlignment) {
+        return horizontalSpeed >= RIDER_INPUT_MIN_SPEED
+                && forwardAlignment >= RIDER_FORWARD_ALIGNMENT;
     }
 
     static boolean isUnsupportedAir(boolean inWater, boolean onGround) {
