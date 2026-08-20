@@ -40,6 +40,12 @@ public final class MarineMobService {
 
     private static final double DIRECTION_EPSILON = 1.0E-6;
     private static final double MAX_SEAT_SPEED = 1.45;
+    private static final double CALL_REACHED_DISTANCE = 3.0;
+    private static final int CALL_LAUNCH_SEARCH_RADIUS = 24;
+    private static final int CALL_LAUNCH_VERTICAL_SCAN = 10;
+    private static final double CALL_LAUNCH_REACHED_DISTANCE = 2.6;
+    private static final double CALL_SWIM_SPEED = 0.52;
+    private static final double CALL_JUMP_HORIZONTAL_SPEED = 0.56;
 
     private final JavaPlugin plugin;
     private final MarineFood food;
@@ -57,6 +63,11 @@ public final class MarineMobService {
     }
 
     public MarineMob spawn(Player owner, MarineMobType type) {
+        return spawn(owner, type, null, null);
+    }
+
+    public MarineMob spawn(Player owner, MarineMobType type, Double riddenSpeedBlocksPerSecond,
+                           Integer jumpHeightBlocks) {
         Location origin = owner.getLocation();
         Vector horizontal = origin.getDirection().setY(0.0);
         if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
@@ -66,10 +77,17 @@ public final class MarineMobService {
 
         double verticalOffset = type == MarineMobType.CRAB ? 0.08 : 0.40;
         Location spawn = origin.clone().add(horizontal).add(0.0, verticalOffset, 0.0);
-        World world = spawn.getWorld();
-        if (world == null) {
-            throw new IllegalStateException("Player world is unavailable");
+        spawn.setYaw(origin.getYaw());
+        spawn.setPitch(0.0F);
+        return spawnAt(spawn, type, riddenSpeedBlocksPerSecond, jumpHeightBlocks);
+    }
+
+    public MarineMob spawnAt(Location spawn, MarineMobType type, Double riddenSpeedBlocksPerSecond,
+                             Integer jumpHeightBlocks) {
+        if (spawn == null || spawn.getWorld() == null) {
+            throw new IllegalArgumentException("Spawn location must have a world");
         }
+        World world = spawn.getWorld();
 
         LivingEntity anchor = createAnchor(world, spawn, type);
         List<Interaction> hitboxes = createHitboxes(world, spawn, type);
@@ -83,11 +101,20 @@ public final class MarineMobService {
                 displays,
                 passengerSeats,
                 type.maxHealth(),
-                origin.getYaw(),
+                spawn.getYaw(),
                 randomTicks(100, 220),
                 ThreadLocalRandom.current().nextBoolean() ? 1 : -1,
                 randomTicks(120, 220)
         );
+        if (type == MarineMobType.ORCA) {
+            if (riddenSpeedBlocksPerSecond != null
+                    && MarineMotionTuning.isValidRiddenSpeed(riddenSpeedBlocksPerSecond)) {
+                mob.riddenSpeedBlocksPerSecond = riddenSpeedBlocksPerSecond;
+            }
+            if (jumpHeightBlocks != null && MarineMotionTuning.isValidJumpHeight(jumpHeightBlocks)) {
+                mob.configuredJumpHeight = jumpHeightBlocks;
+            }
+        }
         mob.wasInWater = isWaterContact(spawn);
         refreshNaturalIntent(mob);
         scheduleNextJump(mob);
@@ -216,6 +243,96 @@ public final class MarineMobService {
                 .orElse(Double.POSITIVE_INFINITY);
     }
 
+    public MarineMob mountedOrNearestOrca(Player player, double radius) {
+        if (player == null) {
+            return null;
+        }
+        for (MarineMob mob : byAnchor.values()) {
+            if (!isUsable(mob) || mob.type != MarineMobType.ORCA) {
+                continue;
+            }
+            if (mob.anchor.getPassengers().contains(player)) {
+                return mob;
+            }
+            for (ArmorStand seat : mob.passengerSeats) {
+                if (seat.isValid() && seat.getPassengers().contains(player)) {
+                    return mob;
+                }
+            }
+        }
+        return nearestOrca(player.getWorld(), player.getLocation(), radius);
+    }
+
+    public MarineMob nearestOrca(World world, Location center, double radius) {
+        if (world == null || center == null || center.getWorld() != world) {
+            return null;
+        }
+        double maxDistanceSquared = radius > 0.0 ? radius * radius : Double.POSITIVE_INFINITY;
+        return byAnchor.values().stream()
+                .filter(this::isUsable)
+                .filter(mob -> mob.type == MarineMobType.ORCA)
+                .filter(mob -> mob.anchor.getWorld().equals(world))
+                .filter(mob -> mob.anchor.getLocation().distanceSquared(center) <= maxDistanceSquared)
+                .min(Comparator.comparingDouble(mob -> mob.anchor.getLocation().distanceSquared(center)))
+                .orElse(null);
+    }
+
+    public void setRiddenSpeed(MarineMob mob, double blocksPerSecond) {
+        if (!isUsable(mob) || mob.type != MarineMobType.ORCA
+                || !MarineMotionTuning.isValidRiddenSpeed(blocksPerSecond)) {
+            return;
+        }
+        mob.riddenSpeedBlocksPerSecond = blocksPerSecond;
+    }
+
+    public void setJumpHeight(MarineMob mob, int blocks) {
+        if (!isUsable(mob) || mob.type != MarineMobType.ORCA
+                || !MarineMotionTuning.isValidJumpHeight(blocks)) {
+            return;
+        }
+        mob.configuredJumpHeight = blocks;
+    }
+
+    public String callNearestOrca(Player player) {
+        MarineMob mob = byAnchor.values().stream()
+                .filter(this::isUsable)
+                .filter(candidate -> candidate.type == MarineMobType.ORCA)
+                .filter(candidate -> !candidate.showControlled)
+                .filter(candidate -> candidate.anchor.getWorld().equals(player.getWorld()))
+                .min(Comparator.comparingDouble(candidate ->
+                        candidate.anchor.getLocation().distanceSquared(player.getLocation())))
+                .orElse(null);
+        if (mob == null) {
+            return "No callable orca exists in this world.";
+        }
+        mob.callTargetPlayer = player.getUniqueId();
+        mob.callTargetLastKnown = player.getLocation().clone();
+        mob.callLaunchTarget = null;
+        mob.callJumpActive = false;
+        mob.callLeftWater = false;
+        mob.jumpPhase = AutonomousJumpPhase.NONE;
+        mob.foodTarget = null;
+        mob.cachedWaterDirection = null;
+        mob.anchor.eject();
+        for (ArmorStand seat : mob.passengerSeats) {
+            if (seat.isValid()) {
+                seat.eject();
+            }
+        }
+
+        boolean playerInWater = isWaterContact(player.getLocation());
+        if (!playerInWater) {
+            mob.callLaunchTarget = findSurfaceWaterNear(player.getLocation(), CALL_LAUNCH_SEARCH_RADIUS);
+            if (mob.callLaunchTarget == null) {
+                return "Orca called. No usable surface water was found within "
+                        + CALL_LAUNCH_SEARCH_RADIUS
+                        + " blocks of you, so it will approach as far as the water allows.";
+            }
+            return "Orca called. It will swim to nearby surface water and jump toward you.";
+        }
+        return "Orca called. It is swimming toward you.";
+    }
+
     public boolean isUsable(MarineMob mob) {
         return mob != null && mob.anchor.isValid() && !mob.anchor.isDead()
                 && byAnchor.containsKey(mob.anchor.getUniqueId());
@@ -232,6 +349,10 @@ public final class MarineMobService {
             }
         }
         mob.showControlled = true;
+        clearCall(mob);
+        mob.showJumpActive = false;
+        mob.showJumpLaunchVelocity = null;
+        mob.showJumpLaunchTicks = 0;
         mob.jumpPhase = AutonomousJumpPhase.NONE;
         mob.cachedWaterDirection = null;
         mob.foodTarget = null;
@@ -247,6 +368,9 @@ public final class MarineMobService {
             return;
         }
         mob.showControlled = false;
+        mob.showJumpActive = false;
+        mob.showJumpLaunchVelocity = null;
+        mob.showJumpLaunchTicks = 0;
         mob.targetYaw = mob.anchor.getLocation().getYaw();
         mob.behaviorTicks = randomTicks(80, 170);
         mob.anchor.setGravity(true);
@@ -307,7 +431,7 @@ public final class MarineMobService {
         mob.anchor.setVelocity(slowed);
     }
 
-    public void launchShowJump(MarineMob mob, Location landing, double requestedHorizontalSpeed, double verticalVelocity) {
+    public void launchShowJump(MarineMob mob, Location landing, double requestedHorizontalSpeed, double ignoredVerticalVelocity) {
         if (!isUsable(mob) || !mob.showControlled || landing == null || landing.getWorld() != mob.anchor.getWorld()) {
             return;
         }
@@ -318,10 +442,48 @@ public final class MarineMobService {
         } else {
             horizontal.normalize();
         }
-        double horizontalSpeed = MarineSpeedLevel.nearestBlocksPerTick(requestedHorizontalSpeed).blocksPerTick();
+
+        int waterBlocksAbove = 0;
+        for (int offset = 1; offset <= 3; offset++) {
+            if (!isWaterAt(current.clone().add(0.0, offset, 0.0))) {
+                break;
+            }
+            waterBlocksAbove = offset;
+        }
+        int requiredRise = Math.min(MarineMotionTuning.MAX_ORCA_JUMP_HEIGHT,
+                MarineMotionTuning.DEFAULT_ORCA_JUMP_HEIGHT + waterBlocksAbove);
+        double verticalVelocity = MarineJumpProfile.initialVerticalVelocity(requiredRise);
+        double horizontalSpeed = clamp(requestedHorizontalSpeed, 0.32, 0.70);
+
+        mob.showJumpActive = true;
+        mob.showJumpLaunchVelocity = horizontal.clone().multiply(horizontalSpeed).setY(verticalVelocity);
+        mob.showJumpLaunchTicks = 3;
         mob.anchor.setGravity(true);
-        mob.anchor.setVelocity(horizontal.clone().multiply(horizontalSpeed).setY(Math.min(verticalVelocity, 1.344)));
-        mob.anchor.setRotation(yawFromVector(horizontal), -12.0F);
+        mob.anchor.setFallDistance(0.0F);
+        mob.anchor.setVelocity(mob.showJumpLaunchVelocity.clone());
+        mob.anchor.setRotation(yawFromVector(horizontal), -16.0F);
+    }
+
+    private void maintainShowJumpLaunch(MarineMob mob, boolean inWater) {
+        if (!mob.showJumpActive || !inWater || mob.showJumpLaunchTicks <= 0
+                || mob.showJumpLaunchVelocity == null) {
+            if (!inWater) {
+                mob.showJumpLaunchTicks = 0;
+            }
+            return;
+        }
+        mob.anchor.setGravity(true);
+        mob.anchor.setVelocity(mob.showJumpLaunchVelocity.clone());
+        mob.showJumpLaunchTicks--;
+    }
+
+    public void finishShowJump(MarineMob mob) {
+        if (!isUsable(mob) || mob.type != MarineMobType.ORCA) {
+            return;
+        }
+        mob.showJumpActive = false;
+        mob.showJumpLaunchVelocity = null;
+        mob.showJumpLaunchTicks = 0;
     }
 
     public void emitShowBlow(MarineMob mob) {
@@ -376,13 +538,17 @@ public final class MarineMobService {
                 if (mob.anchor instanceof Horse horse) {
                     horse.setAI(false);
                 }
+                maintainShowJumpLaunch(mob, inWater);
             } else {
                 Player pilot = nativePilot(mob.anchor);
                 if (mob.anchor instanceof Horse horse) {
                     horse.setAI(pilot != null);
                 }
-                if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
+                if (mob.type == MarineMobType.ORCA && mob.callTargetPlayer != null && pilot == null) {
+                    moveCalledOrca(mob, inWater);
+                } else if (mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
                     if (pilot != null) {
+                        clearCall(mob);
                         mob.jumpPhase = AutonomousJumpPhase.NONE;
                         moveWithNativeRider(mob, inWater);
                     } else if (mob.jumpPhase != AutonomousJumpPhase.NONE) {
@@ -400,6 +566,298 @@ public final class MarineMobService {
             emitWakeAndBreath(mob, inWater);
             updateFollowers(mob);
             updateDisplays(mob);
+        }
+    }
+
+    private void moveCalledOrca(MarineMob mob, boolean inWater) {
+        Player targetPlayer = Bukkit.getPlayer(mob.callTargetPlayer);
+        if (targetPlayer == null || !targetPlayer.isOnline()
+                || targetPlayer.getWorld() != mob.anchor.getWorld()) {
+            clearCall(mob);
+            resumeSwimmingAfterJump(mob, inWater);
+            return;
+        }
+
+        Location current = mob.anchor.getLocation();
+        Location target = targetPlayer.getLocation();
+        boolean targetInWater = isWaterContact(target);
+
+        if (mob.callJumpActive) {
+            mob.anchor.setGravity(true);
+            mob.airborneTicks++;
+            if (!inWater) {
+                mob.callLeftWater = true;
+            }
+            boolean landed = mob.callLeftWater
+                    && (inWater || mob.anchor.isOnGround() || isSolidBelow(current));
+            if (landed || mob.airborneTicks > 160) {
+                mob.callJumpActive = false;
+                mob.callLeftWater = false;
+                mob.jumpPhase = AutonomousJumpPhase.NONE;
+                mob.airborneTicks = 0;
+                clearCall(mob);
+                if (inWater) {
+                    resumeSwimmingAfterJump(mob, true);
+                } else {
+                    returnToWater(mob, current);
+                }
+            }
+            return;
+        }
+
+        if (!inWater) {
+            returnToWater(mob, current);
+            return;
+        }
+
+        if (targetInWater) {
+            mob.callLaunchTarget = null;
+            if (current.distanceSquared(target) <= CALL_REACHED_DISTANCE * CALL_REACHED_DISTANCE) {
+                clearCall(mob);
+                resumeSwimmingAfterJump(mob, true);
+                return;
+            }
+            steerCalledOrcaInWater(mob, target);
+            mob.callTargetLastKnown = target.clone();
+            return;
+        }
+
+        boolean targetMoved = mob.callTargetLastKnown == null
+                || mob.callTargetLastKnown.getWorld() != target.getWorld()
+                || mob.callTargetLastKnown.distanceSquared(target) > 16.0;
+        if (mob.callLaunchTarget == null || targetMoved || !isWaterAt(mob.callLaunchTarget)) {
+            mob.callLaunchTarget = findSurfaceWaterNear(target, CALL_LAUNCH_SEARCH_RADIUS);
+        }
+        mob.callTargetLastKnown = target.clone();
+
+        Location launch = mob.callLaunchTarget;
+        if (launch == null) {
+            // No safe breach point around the player: keep approaching the nearest water
+            // edge instead of freezing against the shore.
+            steerCalledOrcaInWater(mob, target);
+            return;
+        }
+
+        double horizontalToLaunch = horizontalDistance(current, launch);
+        if (horizontalToLaunch > CALL_LAUNCH_REACHED_DISTANCE) {
+            steerCalledOrcaInWater(mob, launch);
+            return;
+        }
+
+        if (!isNearSurface(current)) {
+            Vector toward = launch.toVector().subtract(current.toVector()).setY(0.0);
+            if (toward.lengthSquared() < DIRECTION_EPSILON) {
+                toward = forwardFromYaw(current.getYaw());
+            } else {
+                toward.normalize();
+            }
+            mob.anchor.setVelocity(toward.multiply(0.20).setY(0.075));
+            mob.anchor.setRotation(yawFromVector(toward), -8.0F);
+            return;
+        }
+
+        int jumpHeight = mob.configuredJumpHeightOrDefault();
+        if (!hasClearJumpColumn(current, Math.min(14, jumpHeight + 1))) {
+            mob.callLaunchTarget = findAlternativeLaunchWater(target, launch, CALL_LAUNCH_SEARCH_RADIUS);
+            if (mob.callLaunchTarget == null) {
+                steerCalledOrcaInWater(mob, target);
+            }
+            return;
+        }
+        launchCallJump(mob, target, jumpHeight);
+    }
+
+    private void steerCalledOrcaInWater(MarineMob mob, Location target) {
+        Location current = mob.anchor.getLocation();
+        Vector desiredDirection = target.toVector().subtract(current.toVector()).setY(0.0);
+        if (desiredDirection.lengthSquared() < DIRECTION_EPSILON) {
+            desiredDirection = forwardFromYaw(current.getYaw());
+        } else {
+            desiredDirection.normalize();
+        }
+
+        Vector open = findOpenCallDirection(current, desiredDirection);
+        if (open == null) {
+            Vector reverse = desiredDirection.multiply(-1.0);
+            mob.anchor.setVelocity(reverse.multiply(0.18).setY(0.0));
+            mob.anchor.setRotation(yawFromVector(reverse), 0.0F);
+            return;
+        }
+
+        double vertical = clamp((target.getY() - current.getY()) * 0.055, -0.055, 0.065);
+        if (!isWaterAt(current.clone().add(0.0, -0.85, 0.0))) {
+            vertical = Math.max(vertical, 0.035);
+        }
+        if (!isWaterAt(current.clone().add(0.0, 1.10, 0.0))) {
+            vertical = Math.min(vertical, 0.015);
+        }
+
+        Vector desired = open.clone().multiply(CALL_SWIM_SPEED).setY(vertical);
+        Vector velocity = blendVelocity(mob.anchor.getVelocity(), desired, 0.28);
+        mob.anchor.setGravity(true);
+        mob.anchor.setVelocity(velocity);
+        mob.anchor.setRotation(yawFromVector(open),
+                (float) clamp(-velocity.getY() * 120.0, -12.0, 12.0));
+    }
+
+    private static Vector findOpenCallDirection(Location current, Vector preferred) {
+        double[] turns = {0.0, 20.0, -20.0, 40.0, -40.0, 70.0, -70.0,
+                100.0, -100.0, 140.0, -140.0, 180.0};
+        for (double degrees : turns) {
+            Vector candidate = rotateY(preferred, Math.toRadians(degrees)).normalize();
+            Location near = current.clone().add(candidate.clone().multiply(0.75));
+            Location far = current.clone().add(candidate.clone().multiply(1.65));
+            float yaw = yawFromVector(candidate);
+            near.setYaw(yaw);
+            far.setYaw(yaw);
+            if (!isWaterAt(near) && !isWaterAt(near.clone().add(0.0, -0.65, 0.0))) {
+                continue;
+            }
+            if (!isWaterAt(far) && !isWaterAt(far.clone().add(0.0, -0.65, 0.0))) {
+                continue;
+            }
+            if (!MarineCollisionGeometry.bodyCollides(near, MarineMobType.ORCA)
+                    && !MarineCollisionGeometry.bodyCollides(far, MarineMobType.ORCA)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private void launchCallJump(MarineMob mob, Location target, int jumpHeight) {
+        Location current = mob.anchor.getLocation();
+        Vector horizontal = target.toVector().subtract(current.toVector()).setY(0.0);
+        double distance = horizontal.length();
+        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
+            horizontal = forwardFromYaw(current.getYaw());
+        } else {
+            horizontal.normalize();
+        }
+
+        int requiredHeight = Math.max(jumpHeight,
+                (int) Math.ceil(Math.max(0.0, target.getY() - current.getY())) + 3);
+        requiredHeight = Math.max(MarineMotionTuning.MIN_ORCA_JUMP_HEIGHT,
+                Math.min(MarineMotionTuning.MAX_ORCA_JUMP_HEIGHT, requiredHeight));
+        double vertical = MarineJumpProfile.initialVerticalVelocity(requiredHeight);
+        int flightTicks = estimateFlightTicks(vertical, target.getY() - current.getY());
+        double horizontalSpeed = clamp(distance / Math.max(8.0, flightTicks), 0.08, CALL_JUMP_HORIZONTAL_SPEED);
+
+        mob.jumpPhase = AutonomousJumpPhase.AIRBORNE;
+        mob.airborneTicks = 0;
+        mob.callJumpActive = true;
+        mob.callLeftWater = false;
+        mob.anchor.setGravity(true);
+        mob.anchor.setVelocity(horizontal.clone().multiply(horizontalSpeed).setY(vertical));
+        mob.anchor.setRotation(yawFromVector(horizontal), -16.0F);
+
+        World world = current.getWorld();
+        world.spawnParticle(Particle.SPLASH, current, 70, 1.7, 0.55, 1.7, 0.18);
+        world.playSound(current, Sound.ENTITY_GENERIC_SPLASH, 1.6F, 0.78F);
+    }
+
+    private static int estimateFlightTicks(double initialVertical, double targetDeltaY) {
+        double y = 0.0;
+        double v = initialVertical;
+        boolean descending = false;
+        for (int tick = 1; tick <= 100; tick++) {
+            v = MarineAirKinematics.nextVerticalVelocity(v);
+            y += v;
+            if (v < 0.0) {
+                descending = true;
+            }
+            if (descending && y <= targetDeltaY) {
+                return tick;
+            }
+        }
+        return 40;
+    }
+
+    private static Location findSurfaceWaterNear(Location target, int radius) {
+        return findSurfaceWaterNear(target, radius, null);
+    }
+
+    private static Location findAlternativeLaunchWater(Location target, Location excluded, int radius) {
+        return findSurfaceWaterNear(target, radius, excluded);
+    }
+
+    private static Location findSurfaceWaterNear(Location target, int radius, Location excluded) {
+        World world = target.getWorld();
+        if (world == null) {
+            return null;
+        }
+        Location best = null;
+        double bestScore = Double.MAX_VALUE;
+        int centerY = target.getBlockY();
+
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                double horizontalSquared = x * x + z * z;
+                if (horizontalSquared > radius * radius) {
+                    continue;
+                }
+                for (int y = -CALL_LAUNCH_VERTICAL_SCAN; y <= 2; y++) {
+                    Location probe = new Location(world,
+                            target.getBlockX() + x + 0.5,
+                            centerY + y + 0.2,
+                            target.getBlockZ() + z + 0.5);
+                    if (!isWaterAt(probe) || isWaterAt(probe.clone().add(0.0, 1.35, 0.0))) {
+                        continue;
+                    }
+                    if (excluded != null && excluded.getWorld() == world
+                            && probe.distanceSquared(excluded) < 9.0) {
+                        continue;
+                    }
+                    Vector towardPlayer = target.toVector().subtract(probe.toVector()).setY(0.0);
+                    if (towardPlayer.lengthSquared() < DIRECTION_EPSILON) {
+                        towardPlayer = forwardFromYaw(target.getYaw());
+                    } else {
+                        towardPlayer.normalize();
+                    }
+                    probe.setYaw(yawFromVector(towardPlayer));
+                    if (MarineCollisionGeometry.bodyCollides(probe, MarineMobType.ORCA)) {
+                        continue;
+                    }
+                    if (!hasClearJumpColumn(probe, 11)) {
+                        continue;
+                    }
+                    double score = horizontalSquared + Math.abs(y) * 1.5;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = probe;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private static double horizontalDistance(Location a, Location b) {
+        double dx = a.getX() - b.getX();
+        double dz = a.getZ() - b.getZ();
+        return Math.hypot(dx, dz);
+    }
+
+    private void clearCall(MarineMob mob) {
+        mob.callTargetPlayer = null;
+        mob.callTargetLastKnown = null;
+        mob.callLaunchTarget = null;
+        mob.callJumpActive = false;
+        mob.callLeftWater = false;
+    }
+
+    private void resumeSwimmingAfterJump(MarineMob mob, boolean inWater) {
+        mob.jumpPhase = AutonomousJumpPhase.NONE;
+        mob.airborneTicks = 0;
+        mob.jumpPhaseTicks = 0;
+        mob.shallowJump = false;
+        mob.anchor.setGravity(true);
+        refreshNaturalIntent(mob);
+        scheduleNextJump(mob);
+        if (inWater && mob.type.movementStyle() == MarineMobType.MovementStyle.AQUATIC) {
+            int minimumLevel = MarineActivityProfile.minRoamLevel(mob.type);
+            MarineSpeedLevel level = MarineSpeedLevel.of(Math.max(minimumLevel, mob.speedLevel.level()));
+            Vector forward = forwardFromYaw(mob.anchor.getLocation().getYaw());
+            mob.anchor.setVelocity(forward.multiply(level.blocksPerTick()).setY(0.0));
         }
     }
 
@@ -579,7 +1037,9 @@ public final class MarineMobService {
         mob.jumpPhase = AutonomousJumpPhase.DIVE;
         mob.jumpPhaseTicks = MarineWaterPhysics.diveTicks(mob.shallowJump, mob.type);
         mob.jumpHeight = mob.type == MarineMobType.ORCA
-                ? ThreadLocalRandom.current().nextInt(3, 11)
+                ? (mob.configuredJumpHeight > 0
+                    ? mob.configuredJumpHeight
+                    : ThreadLocalRandom.current().nextInt(3, 11))
                 : ThreadLocalRandom.current().nextInt(2, 6);
         int jumpLevel = mob.type == MarineMobType.ORCA
                 ? (mob.jumpHeight >= 9 ? 10 : mob.jumpHeight >= 6 ? 9 : 8)
@@ -596,8 +1056,12 @@ public final class MarineMobService {
         if (mob.jumpPhase == AutonomousJumpPhase.AIRBORNE) {
             mob.anchor.setGravity(true);
             mob.airborneTicks++;
-            if ((inWater && mob.airborneTicks > 6) || mob.airborneTicks > 160) {
+            boolean grounded = mob.anchor.isOnGround() || isSolidBelow(location);
+            if ((inWater && mob.airborneTicks > 4) || grounded || mob.airborneTicks > 160) {
                 finishAutonomousJump(mob, inWater);
+                if (!inWater && grounded) {
+                    returnToWater(mob, location);
+                }
             }
             return;
         }
@@ -667,13 +1131,7 @@ public final class MarineMobService {
     }
 
     private void finishAutonomousJump(MarineMob mob, boolean inWater) {
-        mob.jumpPhase = AutonomousJumpPhase.NONE;
-        mob.airborneTicks = 0;
-        mob.jumpPhaseTicks = 0;
-        mob.anchor.setGravity(true);
-        mob.shallowJump = false;
-        scheduleNextJump(mob);
-        refreshNaturalIntent(mob);
+        resumeSwimmingAfterJump(mob, inWater);
     }
 
     private static double jumpVelocityForHeight(int blocks) {
@@ -1241,6 +1699,14 @@ public final class MarineMobService {
         return new Vector(-Math.sin(radians), 0.0, Math.cos(radians));
     }
 
+    private static Vector rotateY(Vector vector, double radians) {
+        double cos = Math.cos(radians);
+        double sin = Math.sin(radians);
+        double x = vector.getX() * cos + vector.getZ() * sin;
+        double z = -vector.getX() * sin + vector.getZ() * cos;
+        return new Vector(x, vector.getY(), z);
+    }
+
     private static float yawFromVector(Vector vector) {
         return (float) Math.toDegrees(Math.atan2(-vector.getX(), vector.getZ()));
     }
@@ -1304,6 +1770,16 @@ public final class MarineMobService {
         private boolean shallowJump;
         private float visualYaw;
         private float visualPitch;
+        private double riddenSpeedBlocksPerSecond = MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_SECOND;
+        private int configuredJumpHeight;
+        private UUID callTargetPlayer;
+        private Location callTargetLastKnown;
+        private Location callLaunchTarget;
+        private boolean callJumpActive;
+        private boolean callLeftWater;
+        private boolean showJumpActive;
+        private Vector showJumpLaunchVelocity;
+        private int showJumpLaunchTicks;
 
         private MarineMob(MarineMobType type, LivingEntity anchor, List<Interaction> hitboxes,
                           List<BlockDisplay> displays, List<ArmorStand> passengerSeats,
@@ -1328,7 +1804,16 @@ public final class MarineMobService {
         public int hitboxCount() { return hitboxes.size(); }
         public UUID id() { return anchor.getUniqueId(); }
         public boolean showControlled() { return showControlled; }
+        public boolean commandControlled() { return callTargetPlayer != null; }
+        public boolean showJumpActive() { return showJumpActive; }
         public Location location() { return anchor.getLocation().clone(); }
         public int speedLevel() { return speedLevel.level(); }
+        public double riddenSpeedBlocksPerSecond() { return riddenSpeedBlocksPerSecond; }
+        public double riddenSpeedBlocksPerTick() {
+            return MarineMotionTuning.blocksPerTick(riddenSpeedBlocksPerSecond);
+        }
+        public int configuredJumpHeightOrDefault() {
+            return configuredJumpHeight > 0 ? configuredJumpHeight : MarineMotionTuning.DEFAULT_ORCA_JUMP_HEIGHT;
+        }
     }
 }
