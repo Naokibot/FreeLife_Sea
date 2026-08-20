@@ -95,11 +95,11 @@ final class MarineFinalMotionController {
                 Player pilot = entity instanceof Horse horse ? firstPlayerPassenger(horse) : null;
                 if (pilot != null && mob.type() == MarineMobType.ORCA && inWater && !mob.showControlled()) {
                     breachLaunches.remove(id);
-                    steerRiddenOrca((Horse) entity, pilot);
+                    steerRiddenOrca((Horse) entity, pilot, mob);
                     continue;
                 }
 
-                if (!inWater || mob.showControlled() || pilot != null
+                if (!inWater || mob.showControlled() || mob.commandControlled() || pilot != null
                         || mob.type().movementStyle() != MarineMobType.MovementStyle.AQUATIC) {
                     breachLaunches.remove(id);
                     continue;
@@ -255,7 +255,7 @@ final class MarineFinalMotionController {
         return new MoveResult(current, false, false);
     }
 
-    private void steerRiddenOrca(Horse horse, Player pilot) {
+    private void steerRiddenOrca(Horse horse, Player pilot, MarineMobService.MarineMob mob) {
         Vector nativeVelocity = horse.getVelocity();
         Vector nativeHorizontal = nativeVelocity.clone().setY(0.0);
         double nativeHorizontalSpeed = nativeHorizontal.length();
@@ -289,7 +289,7 @@ final class MarineFinalMotionController {
         }
 
         Location location = horse.getLocation();
-        double speed = MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK;
+        double speed = mob.riddenSpeedBlocksPerTick();
         boolean shallow = shallowPool(location);
         boolean breachReady = isWithinOneBlockOfSurface(location) && look.getY() > 0.20;
         double maxVertical = breachReady
