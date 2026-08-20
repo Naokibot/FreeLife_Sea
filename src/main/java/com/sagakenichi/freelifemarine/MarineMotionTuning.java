@@ -3,7 +3,7 @@ package com.sagakenichi.freelifemarine;
 final class MarineMotionTuning {
 
     static final double PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND = 56.0;
-    static final double ORCA_RIDDEN_SPEED_SCALE = 0.60;
+    static final double ORCA_RIDDEN_SPEED_SCALE = 1.50;
     static final double ORCA_RIDDEN_BLOCKS_PER_SECOND =
             PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND * ORCA_RIDDEN_SPEED_SCALE;
     static final double ORCA_RIDDEN_BLOCKS_PER_TICK = ORCA_RIDDEN_BLOCKS_PER_SECOND / 20.0;
