@@ -3,14 +3,20 @@ version: 1.10.0
 main: com.sagakenichi.freelifemarine.FreeLifeMarineMobsPlugin
 api-version: '1.21'
 author: Naokibot
-description: Command-only animated marine mobs with deterministic air gravity, high-activity autonomous swimming, 3-13 block orca breaches, 3D gaze riding, marine food, dense hitboxes, and scheduled orca shows.
+description: Animated marine mobs with configurable orca riding, autonomous roaming, breach jumps, command-block spawning, and scheduled orca shows.
 commands:
   marine:
-    description: Manage FreeLife marine mobs, marine food, and orca shows.
-    usage: /marine <spawn|food|show>
+    description: Manage FreeLife marine mobs, calls, tuning, marine food, and orca shows.
+    usage: /marine <spawn|call|speed|jump|food|show>
 permissions:
   freelifemarine.spawn:
-    description: Allows spawning shark, orca, and crab mobs.
+    description: Allows spawning shark, orca, and crab mobs, including from command blocks.
+    default: op
+  freelifemarine.call:
+    description: Allows calling the nearest spawned orca to the player.
+    default: op
+  freelifemarine.tune:
+    description: Allows changing an orca's riding speed and jump height.
     default: op
   freelifemarine.food:
     description: Allows receiving the custom marine food item.
