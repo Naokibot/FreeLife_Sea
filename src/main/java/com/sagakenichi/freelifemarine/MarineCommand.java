@@ -1,5 +1,7 @@
 package com.sagakenichi.freelifemarine;
 
+import org.bukkit.Location;
+import org.bukkit.command.BlockCommandSender;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -35,46 +37,150 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args[0].equalsIgnoreCase("spawn")) {
-            return handleSpawn(sender, label, args);
-        }
-        if (args[0].equalsIgnoreCase("food")) {
-            return handleFood(sender, label, args);
-        }
-        if (args[0].equalsIgnoreCase("show")) {
-            return handleShow(sender, label, args);
-        }
-
-        sendUsage(sender, label);
-        return true;
+        return switch (args[0].toLowerCase(Locale.ROOT)) {
+            case "spawn" -> handleSpawn(sender, label, args);
+            case "food" -> handleFood(sender, label, args);
+            case "show" -> handleShow(sender, label, args);
+            case "call" -> handleCall(sender, label, args);
+            case "speed", "ride-speed" -> handleRideSpeed(sender, label, args);
+            case "jump", "jump-height" -> handleJumpHeight(sender, label, args);
+            default -> {
+                sendUsage(sender, label);
+                yield true;
+            }
+        };
     }
 
     private boolean handleSpawn(CommandSender sender, String label, String[] args) {
-        if (!sender.hasPermission("freelifemarine.spawn")) {
+        if (!(sender instanceof BlockCommandSender) && !sender.hasPermission("freelifemarine.spawn")) {
             sender.sendMessage("You do not have permission to spawn marine mobs.");
             return true;
         }
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage("This command must be run by a player.");
-            return true;
-        }
-        if (args.length != 2) {
-            player.sendMessage("Usage: /" + label + " spawn <shark|orca|crab>");
+        if (args.length < 2 || args.length > 4) {
+            sender.sendMessage("Usage: /" + label + " spawn <shark|orca|crab> [speed-blocks-per-second] [jump-height]");
             return true;
         }
 
         MarineMobType type = MarineMobType.fromInput(args[1]);
         if (type == null) {
-            player.sendMessage("Unknown marine mob. Use shark, orca, or crab.");
+            sender.sendMessage("Unknown marine mob. Use shark, orca, or crab.");
             return true;
         }
 
-        MarineMobService.MarineMob mob = mobs.spawn(player, type);
-        String rideHint = type.rideable()
-                ? " Right-click it to ride (" + mob.seatCount() + " seat" + (mob.seatCount() == 1 ? "" : "s")
-                    + "). The first rider uses normal mounted movement controls."
-                : " It moves on its own and is not rideable.";
-        player.sendMessage("Spawned " + type.displayName() + " with " + (int) type.maxHealth() + " health." + rideHint);
+        Double riddenSpeed = null;
+        Integer jumpHeight = null;
+        if (args.length >= 3) {
+            if (type != MarineMobType.ORCA) {
+                sender.sendMessage("Custom speed/jump values are currently supported for orcas only.");
+                return true;
+            }
+            riddenSpeed = parseDouble(args[2]);
+            if (riddenSpeed == null || !MarineMotionTuning.isValidRiddenSpeed(riddenSpeed)) {
+                sender.sendMessage("Orca speed must be from " + trim(MarineMotionTuning.MIN_ORCA_RIDDEN_BLOCKS_PER_SECOND)
+                        + " to " + trim(MarineMotionTuning.MAX_ORCA_RIDDEN_BLOCKS_PER_SECOND) + " blocks/second.");
+                return true;
+            }
+        }
+        if (args.length >= 4) {
+            jumpHeight = parseInt(args[3]);
+            if (jumpHeight == null || !MarineMotionTuning.isValidJumpHeight(jumpHeight)) {
+                sender.sendMessage("Orca jump height must be from " + MarineMotionTuning.MIN_ORCA_JUMP_HEIGHT
+                        + " to " + MarineMotionTuning.MAX_ORCA_JUMP_HEIGHT + " blocks.");
+                return true;
+            }
+        }
+
+        MarineMobService.MarineMob mob;
+        if (sender instanceof Player player) {
+            mob = mobs.spawn(player, type, riddenSpeed, jumpHeight);
+        } else if (sender instanceof BlockCommandSender blockSender) {
+            Location spawn = blockSender.getBlock().getLocation().clone().add(0.5, 1.0, 0.5);
+            mob = mobs.spawnAt(spawn, type, riddenSpeed, jumpHeight);
+        } else {
+            sender.sendMessage("Console has no spawn position. Run this from a player or command block.");
+            return true;
+        }
+
+        String custom = type == MarineMobType.ORCA
+                ? " Ride speed: " + trim(mob.riddenSpeedBlocksPerSecond()) + " blocks/s; jump: "
+                + mob.configuredJumpHeightOrDefault() + " blocks."
+                : "";
+        sender.sendMessage("Spawned " + type.displayName() + " with " + (int) type.maxHealth() + " health." + custom);
+        return true;
+    }
+
+    private boolean handleCall(CommandSender sender, String label, String[] args) {
+        if (!sender.hasPermission("freelifemarine.call")) {
+            sender.sendMessage("You do not have permission to call orcas.");
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("Usage: /" + label + " call (player only)");
+            return true;
+        }
+        if (args.length != 1) {
+            sender.sendMessage("Usage: /" + label + " call");
+            return true;
+        }
+        sender.sendMessage(mobs.callNearestOrca(player));
+        return true;
+    }
+
+    private boolean handleRideSpeed(CommandSender sender, String label, String[] args) {
+        if (!sender.hasPermission("freelifemarine.tune")) {
+            sender.sendMessage("You do not have permission to tune orcas.");
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("Usage: /" + label + " speed <blocks-per-second> (player only)");
+            return true;
+        }
+        if (args.length != 2) {
+            sender.sendMessage("Usage: /" + label + " speed <blocks-per-second>");
+            return true;
+        }
+        Double value = parseDouble(args[1]);
+        if (value == null || !MarineMotionTuning.isValidRiddenSpeed(value)) {
+            sender.sendMessage("Speed must be from " + trim(MarineMotionTuning.MIN_ORCA_RIDDEN_BLOCKS_PER_SECOND)
+                    + " to " + trim(MarineMotionTuning.MAX_ORCA_RIDDEN_BLOCKS_PER_SECOND) + " blocks/second.");
+            return true;
+        }
+        MarineMobService.MarineMob mob = mobs.mountedOrNearestOrca(player, 16.0);
+        if (mob == null) {
+            sender.sendMessage("No orca found. Ride one or stand within 16 blocks of one.");
+            return true;
+        }
+        mobs.setRiddenSpeed(mob, value);
+        sender.sendMessage("Orca ride speed set to " + trim(value) + " blocks/second.");
+        return true;
+    }
+
+    private boolean handleJumpHeight(CommandSender sender, String label, String[] args) {
+        if (!sender.hasPermission("freelifemarine.tune")) {
+            sender.sendMessage("You do not have permission to tune orcas.");
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("Usage: /" + label + " jump <3-13> (player only)");
+            return true;
+        }
+        if (args.length != 2) {
+            sender.sendMessage("Usage: /" + label + " jump <3-13>");
+            return true;
+        }
+        Integer value = parseInt(args[1]);
+        if (value == null || !MarineMotionTuning.isValidJumpHeight(value)) {
+            sender.sendMessage("Jump height must be from " + MarineMotionTuning.MIN_ORCA_JUMP_HEIGHT
+                    + " to " + MarineMotionTuning.MAX_ORCA_JUMP_HEIGHT + " blocks.");
+            return true;
+        }
+        MarineMobService.MarineMob mob = mobs.mountedOrNearestOrca(player, 16.0);
+        if (mob == null) {
+            sender.sendMessage("No orca found. Ride one or stand within 16 blocks of one.");
+            return true;
+        }
+        mobs.setJumpHeight(mob, value);
+        sender.sendMessage("Orca jump height set to " + value + " blocks.");
         return true;
     }
 
@@ -93,12 +199,12 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
         }
         int amount = 1;
         if (args.length == 2) {
-            try {
-                amount = Integer.parseInt(args[1]);
-            } catch (NumberFormatException ignored) {
+            Integer parsed = parseInt(args[1]);
+            if (parsed == null) {
                 player.sendMessage("Amount must be a number from 1 to 64.");
                 return true;
             }
+            amount = parsed;
         }
         if (amount < 1 || amount > 64) {
             player.sendMessage("Amount must be from 1 to 64.");
@@ -182,7 +288,9 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
     }
 
     private static void sendUsage(CommandSender sender, String label) {
-        sender.sendMessage("/" + label + " spawn <shark|orca|crab>");
+        sender.sendMessage("/" + label + " spawn <shark|orca|crab> [speed] [jump]");
+        sender.sendMessage("/" + label + " call");
+        sender.sendMessage("/" + label + " speed <blocks-per-second> | jump <3-13>");
         sender.sendMessage("/" + label + " food [1-64]");
         sender.sendMessage("/" + label + " show <...>");
     }
@@ -200,6 +308,11 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             List<String> roots = new ArrayList<>();
             if (sender.hasPermission("freelifemarine.spawn")) roots.add("spawn");
+            if (sender.hasPermission("freelifemarine.call")) roots.add("call");
+            if (sender.hasPermission("freelifemarine.tune")) {
+                roots.add("speed");
+                roots.add("jump");
+            }
             if (sender.hasPermission("freelifemarine.food")) roots.add("food");
             if (sender.hasPermission("freelifemarine.show")) roots.add("show");
             String prefix = args[0].toLowerCase(Locale.ROOT);
@@ -208,6 +321,18 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("spawn")) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
             return MOB_NAMES.stream().filter(value -> value.startsWith(prefix)).toList();
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("spawn") && args[1].equalsIgnoreCase("orca")) {
+            return List.of("20", "40", "60", "84", "100").stream().filter(v -> v.startsWith(args[2])).toList();
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("spawn") && args[1].equalsIgnoreCase("orca")) {
+            return List.of("5", "8", "10", "12", "13").stream().filter(v -> v.startsWith(args[3])).toList();
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("speed") || args[0].equalsIgnoreCase("ride-speed"))) {
+            return List.of("20", "40", "60", "84", "100").stream().filter(v -> v.startsWith(args[1])).toList();
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("jump") || args[0].equalsIgnoreCase("jump-height"))) {
+            return List.of("5", "8", "10", "12", "13").stream().filter(v -> v.startsWith(args[1])).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("food")) {
             return List.of("1", "8", "16", "32", "64").stream().filter(value -> value.startsWith(args[1])).toList();
@@ -231,5 +356,29 @@ public final class MarineCommand implements CommandExecutor, TabCompleter {
             return shows.showIds().stream().filter(value -> value.startsWith(prefix)).toList();
         }
         return List.of();
+    }
+
+    private static Integer parseInt(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static Double parseDouble(String value) {
+        try {
+            double parsed = Double.parseDouble(value);
+            return Double.isFinite(parsed) ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static String trim(double value) {
+        if (value == Math.rint(value)) {
+            return Long.toString(Math.round(value));
+        }
+        return String.format(Locale.ROOT, "%.2f", value).replaceAll("0+$", "").replaceAll("\\.$", "");
     }
 }
