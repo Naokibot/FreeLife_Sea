@@ -8,26 +8,28 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MarineActivityProfileTest {
 
     @Test
-    void orcasUseFasterMoreVariedAutonomousSpeeds() {
-        assertEquals(4, MarineActivityProfile.minRoamLevel(MarineMobType.ORCA));
-        assertEquals(7, MarineActivityProfile.maxRoamLevel(MarineMobType.ORCA));
-        assertEquals(8, MarineActivityProfile.burstLevel(MarineMobType.ORCA));
-        assertTrue(MarineActivityProfile.burstChance(MarineMobType.ORCA) >= 0.20);
+    void orcasRoamAtHighSpeedAndBurstAtLevelTen() {
+        assertEquals(7, MarineActivityProfile.minRoamLevel(MarineMobType.ORCA));
+        assertEquals(9, MarineActivityProfile.maxRoamLevel(MarineMobType.ORCA));
+        assertEquals(10, MarineActivityProfile.burstLevel(MarineMobType.ORCA));
+        assertTrue(MarineActivityProfile.burstChance(MarineMobType.ORCA) >= 0.50);
+        assertTrue(MarineActivityProfile.accelerationMultiplier(MarineMobType.ORCA) >= 2.0);
     }
 
     @Test
-    void sharksRemainActiveButBelowOrcaBurstSpeed() {
-        assertEquals(4, MarineActivityProfile.minRoamLevel(MarineMobType.SHARK));
-        assertEquals(6, MarineActivityProfile.maxRoamLevel(MarineMobType.SHARK));
-        assertEquals(7, MarineActivityProfile.burstLevel(MarineMobType.SHARK));
+    void sharksRemainFastButBelowOrcaMaximum() {
+        assertEquals(6, MarineActivityProfile.minRoamLevel(MarineMobType.SHARK));
+        assertEquals(8, MarineActivityProfile.maxRoamLevel(MarineMobType.SHARK));
+        assertEquals(9, MarineActivityProfile.burstLevel(MarineMobType.SHARK));
+        assertTrue(MarineActivityProfile.accelerationMultiplier(MarineMobType.SHARK) >= 1.8);
     }
 
     @Test
-    void autonomousChangesAndBreachesOccurMoreOften() {
-        assertTrue(MarineActivityProfile.maxBehaviorTicksExclusive(MarineMobType.ORCA) <= 121);
-        assertTrue(MarineActivityProfile.maxBehaviorTicksExclusive(MarineMobType.SHARK) <= 151);
-        assertEquals(260, MarineActivityProfile.minJumpDelayTicks(MarineMobType.ORCA));
-        assertEquals(480, MarineActivityProfile.minJumpDelayTicks(MarineMobType.SHARK));
-        assertTrue(MarineActivityProfile.maxYawChange(MarineMobType.ORCA) >= 50.0);
+    void autonomousChangesAndBreachesAreFrequent() {
+        assertTrue(MarineActivityProfile.maxBehaviorTicksExclusive(MarineMobType.ORCA) <= 56);
+        assertTrue(MarineActivityProfile.maxBehaviorTicksExclusive(MarineMobType.SHARK) <= 76);
+        assertEquals(100, MarineActivityProfile.minJumpDelayTicks(MarineMobType.ORCA));
+        assertEquals(200, MarineActivityProfile.minJumpDelayTicks(MarineMobType.SHARK));
+        assertTrue(MarineActivityProfile.maxYawChange(MarineMobType.ORCA) >= 65.0);
     }
 }
