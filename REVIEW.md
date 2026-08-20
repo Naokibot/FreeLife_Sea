@@ -24,45 +24,78 @@ The 1.8.0 controller called `setGravity(true)`, but out-of-water recovery could 
 
 The production server still reported airborne hovering. Version 1.9.0 added a final per-tick controller after normal marine AI, plus player-facing orca steering and a 56 blocks/s ridden-orca target (four times the previous 14 blocks/s maximum).
 
-The 1.9.0 fall recovery still relied on `Entity#setVelocity` to make the invisible Horse/Slime carrier actually change position. The user's live-server report after 1.9.0 shows that assumption is not sufficiently robust for this environment: the carrier may retain or accept a velocity value without producing the expected positional fall.
+The 1.9.0 fall recovery still relied on `Entity#setVelocity` to make the invisible Horse/Slime carrier actually change position. The user's live-server report after 1.9.0 showed that assumption was not sufficiently robust for that environment.
 
 ## 1.9.1 deterministic manual airborne gravity
 
 Version 1.9.1 removes the remaining dependency on carrier-native velocity integration while the carrier is unsupported in air.
 
-The final controller now:
+The final controller:
 
-1. detects a tracked marine carrier that is outside water and lacks solid support;
-2. captures its current horizontal and vertical velocity once on entry to air;
-3. temporarily disables carrier-native gravity for that airborne phase so two physics systems cannot fight each other;
-4. integrates gravity itself using `0.08` blocks/tick² and `0.98` vertical drag;
-5. applies the resulting position directly with `Entity#teleport` every tick;
-6. subdivides movement into at most 0.20-block sweep increments so a fast jump cannot skip through water or a solid block in one update;
-7. restores normal gravity and aquatic control immediately on water re-entry;
-8. restores normal gravity with zero velocity when a solid collision is reached.
+1. detects a tracked marine carrier outside water and without solid support;
+2. captures horizontal and vertical velocity on entry to air;
+3. temporarily disables carrier-native gravity for that airborne phase;
+4. integrates gravity using `0.08` blocks/tick² and `0.98` vertical drag;
+5. applies the resulting position directly every tick;
+6. subdivides movement into at most 0.20-block sweep increments;
+7. restores normal aquatic control on water re-entry;
+8. restores normal gravity on solid collision.
 
-This is intentionally more deterministic than the 1.8.1 and 1.9.0 approaches. Even if the invisible Horse ignores velocity-based falling on the production server, its Y coordinate is explicitly changed during unsupported-air ticks.
+The visible BlockDisplay model and Interaction hitboxes remain followers of the carrier.
 
-The visible BlockDisplay model and Interaction hitboxes remain follower entities driven from the carrier, so they inherit the carrier's corrected position on the next normal marine update tick.
+## 1.10.0 high-activity movement review
 
-### Riding interaction
+The new request was to make autonomous swimming substantially faster and more frequent, support 3-13 block orca breaches, and make ridden orcas follow the player's full gaze so looking up ascends and looking down dives.
 
-Player-facing orca riding remains unchanged from 1.9.0:
+### Autonomous swimming
 
-- the pilot's horizontal look direction controls travel in a two-block-deep pool;
-- deeper water allows limited pitch-based ascent/descent;
-- ridden-orca target speed remains 56 blocks/s (2.8 blocks/tick);
-- once the carrier is unsupported in air, rider propulsion yields to the deterministic airborne integrator.
+The autonomous profile now uses:
+
+- Orca ordinary roaming: levels 7-9 (14-18 blocks/s), with level-10 (20 blocks/s) bursts selected on about 55% of intent changes.
+- Shark ordinary roaming: levels 6-8 (12-16 blocks/s), with level-9 (18 blocks/s) bursts on about 35% of intent changes.
+- Orca intent window: 20-55 ticks.
+- Shark intent window: 30-75 ticks.
+- Wider yaw changes and stronger vertical intent than the 1.8 profile.
+- Orca breach opportunity delay: 100-320 ticks.
+- Shark breach opportunity delay: 200-600 ticks.
+
+A final-pass minimum-speed guard is applied only when water exists ahead. This is deliberate: it prevents an earlier movement controller from leaving an animal moving slowly in open water without blindly overriding wall avoidance near pool geometry.
+
+### Breaches
+
+`MarineJumpProfile` defines:
+
+- Orca height range: 3-13 blocks above the water surface.
+- Shark height range: 3-7 blocks.
+- A 14-block overhead-clearance probe for the largest orca breach.
+- Increasing initial vertical velocity for each target height from 3 through 13 blocks.
+
+The final motion controller has an independent breach scheduler. While a breach is beginning in water it reasserts the launch vector for a short bounded window so earlier same-tick controllers cannot cancel it. Once the carrier leaves water, the 1.9.1 deterministic airborne integrator takes over.
+
+The configured height is a controller target. Exact live-client apex depends on the water-exit transition and therefore remains an E2E measurement, not something CI alone can prove.
+
+### Three-dimensional rider gaze
+
+Ridden orcas continue to target 56 blocks/s. The final controller now derives both horizontal and vertical movement from the pilot's gaze:
+
+- looking left/right changes heading;
+- looking up commands ascent;
+- looking down commands a dive;
+- deeper water permits a larger vertical component;
+- two-block-deep pools clamp the vertical component and probe the surface/floor before accepting further ascent/descent;
+- once outside water, rider propulsion stops and deterministic airborne gravity wins.
 
 ## Tests and verification boundary
 
-Unit tests cover:
+Unit/CI coverage includes:
 
 - ten-level marine speeds and the exact 20 blocks/s level-10 mapping;
+- high-activity Orca/Shark autonomous profile ranges;
+- 3-13 block orca jump-profile range and monotonic launch velocities;
 - 56 blocks/s ridden-orca tuning;
-- pursuit, activity, shallow-water, hitbox, and show-schedule behavior;
+- pursuit, shallow-water, hitbox, and show-schedule behavior;
 - deterministic gravity turning a zero-vertical-velocity apex into descent;
 - continued acceleration over repeated airborne ticks;
 - sweep subdivision for large displacement.
 
-CI can verify compilation against Spigot 1.21.1, unit tests, JAR integrity, Java 21 class version 65, and packaging. It cannot reproduce the user's exact production server or prove the visual result of manual airborne teleport integration in a live Minecraft client. A staging-server E2E run is still required before claiming the production hover symptom is definitively eliminated.
+CI can verify compilation against Spigot 1.21.1, unit tests, JAR integrity, Java 21 class version 65, and packaging. It cannot prove the exact production-server movement feel, exact 13-block visible apex, wall behavior at every pool geometry, or 56-block/s rider feel in a live client. Those remain staging-server E2E checks.
