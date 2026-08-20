@@ -2,14 +2,19 @@ package com.sagakenichi.freelifemarine;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.SoundCategory;
 import org.bukkit.World;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -23,12 +28,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 public final class OrcaShowManager {
 
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Tokyo");
     private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm");
     private static final int SHOW_END_TICK = 760;
+    private static final int SHOW_RING_PARTS = 28;
+    private static final double SHOW_RING_RADIUS = 3.8;
+    private static final float SHOW_RING_BLOCK_SCALE = 0.34F;
     private static final float[] MELODY = {
             1.000F, 1.122F, 1.260F, 1.335F,
             1.498F, 1.335F, 1.260F, 1.122F,
@@ -40,6 +49,7 @@ public final class OrcaShowManager {
     private final MarineMobService mobs;
     private final Map<String, ShowDefinition> definitions = new LinkedHashMap<>();
     private final Set<String> firedOccurrences = new HashSet<>();
+    private final Map<UUID, JumpRing> jumpRings = new LinkedHashMap<>();
     private BukkitTask task;
     private ActiveShow active;
     private long serverTicks;
@@ -268,6 +278,7 @@ public final class OrcaShowManager {
             return "No orca show is currently running.";
         }
         active = null;
+        removeAllJumpRings();
         for (MarineMobService.MarineMob mob : current.orcas) {
             mobs.endShowControl(mob);
         }
@@ -397,21 +408,111 @@ public final class OrcaShowManager {
     private void runJumpWave(ActiveShow show, Location center, int tick) {
         for (int index = 0; index < show.orcas.size(); index++) {
             MarineMobService.MarineMob mob = show.orcas.get(index);
-            int launchTick = 440 + index * 16;
+            int launchTick = 460 + index * 24;
+            int ringTick = launchTick - 20;
             double right = formationOffset(index, show.orcas.size(), 2.8);
             Location prep = relative(center, show.definition.headingYaw, -7.0, -1.10, right);
             Location landing = relative(center, show.definition.headingYaw, 7.5, -0.10, right);
 
+            if (tick >= ringTick && tick <= launchTick && !jumpRings.containsKey(mob.id())) {
+                createJumpRing(mob, prep, show.definition.headingYaw, tick);
+            }
+
             if (tick < launchTick) {
                 mobs.guideShow(mob, prep, 0.24);
             } else if (tick == launchTick) {
-                mobs.launchShowJump(mob, landing, 0.54, 0.72);
+                mobs.launchShowJump(mob, landing, 0.54, 1.0);
                 announce(center, show.definition.audienceRadius,
                         "§bJump!", show.definition.musicVolume);
-            } else if (tick > launchTick + 52) {
+            } else if (!mob.showJumpActive() && tick > launchTick + 8) {
                 mobs.guideShow(mob, landing, 0.34);
             }
+
+            updateJumpRing(mob, tick, launchTick);
         }
+    }
+
+    private void createJumpRing(MarineMobService.MarineMob mob, Location launch, float headingYaw, int tick) {
+        launch = launch.clone();
+        World world = launch.getWorld();
+        if (world == null) {
+            return;
+        }
+
+        Location center = relative(launch, headingYaw, 2.6, 5.2, 0.0);
+        Vector forward = forwardFromYaw(headingYaw);
+        Vector right = new Vector(forward.getZ(), 0.0, -forward.getX()).normalize();
+        List<BlockDisplay> parts = new ArrayList<>(SHOW_RING_PARTS);
+
+        for (int index = 0; index < SHOW_RING_PARTS; index++) {
+            double angle = Math.PI * 2.0 * index / SHOW_RING_PARTS;
+            Vector offset = right.clone().multiply(Math.cos(angle) * SHOW_RING_RADIUS)
+                    .add(new Vector(0.0, Math.sin(angle) * SHOW_RING_RADIUS, 0.0));
+            Location point = center.clone().add(offset);
+            BlockDisplay display = world.spawn(point, BlockDisplay.class, entity -> {
+                entity.setBlock(Material.SEA_LANTERN.createBlockData());
+                entity.setGravity(false);
+                entity.setPersistent(false);
+                entity.setInvulnerable(true);
+                entity.setShadowRadius(0.0F);
+                entity.setShadowStrength(0.0F);
+                entity.setInterpolationDelay(0);
+                entity.setInterpolationDuration(1);
+                entity.setTeleportDuration(1);
+                entity.setViewRange(2.8F);
+                entity.setDisplayWidth(0.8F);
+                entity.setDisplayHeight(0.8F);
+                entity.setTransformation(new Transformation(
+                        new Vector3f(-SHOW_RING_BLOCK_SCALE / 2.0F,
+                                -SHOW_RING_BLOCK_SCALE / 2.0F,
+                                -SHOW_RING_BLOCK_SCALE / 2.0F),
+                        new AxisAngle4f(0.0F, 0.0F, 1.0F, 0.0F),
+                        new Vector3f(SHOW_RING_BLOCK_SCALE, SHOW_RING_BLOCK_SCALE, SHOW_RING_BLOCK_SCALE),
+                        new AxisAngle4f(0.0F, 0.0F, 1.0F, 0.0F)
+                ));
+            });
+            parts.add(display);
+        }
+        jumpRings.put(mob.id(), new JumpRing(center, forward, List.copyOf(parts), tick));
+    }
+
+    private void updateJumpRing(MarineMobService.MarineMob mob, int tick, int launchTick) {
+        JumpRing ring = jumpRings.get(mob.id());
+        if (ring == null || tick < launchTick) {
+            return;
+        }
+
+        Vector fromRingCenter = mob.location().toVector().subtract(ring.center.toVector());
+        double planePosition = fromRingCenter.dot(ring.forward);
+        boolean passedThrough = planePosition >= -0.35 && planePosition <= 2.5;
+        boolean jumpClearlyStarted = tick >= launchTick + 12;
+        boolean jumpEnded = !mob.showJumpActive() && tick > launchTick;
+        if (passedThrough || jumpClearlyStarted || jumpEnded) {
+            removeJumpRing(mob.id());
+        }
+    }
+
+    private void removeJumpRing(UUID mobId) {
+        JumpRing ring = jumpRings.remove(mobId);
+        if (ring == null) {
+            return;
+        }
+        for (BlockDisplay display : ring.parts) {
+            if (display.isValid()) {
+                display.remove();
+            }
+        }
+    }
+
+    private void removeAllJumpRings() {
+        for (UUID id : List.copyOf(jumpRings.keySet())) {
+            removeJumpRing(id);
+        }
+    }
+
+    private static Vector forwardFromYaw(float yaw) {
+        double radians = Math.toRadians(yaw);
+        return new Vector(-Math.sin(radians), 0.0, Math.cos(radians));
     }
 
     private void playMusic(ActiveShow show, Location center) {
@@ -585,6 +686,21 @@ public final class OrcaShowManager {
     ) {
         Location center(World world) {
             return new Location(world, x, y, z, headingYaw, 0.0F);
+        }
+    }
+
+    private static final class JumpRing {
+        private final Location center;
+        private final Vector forward;
+        private final List<BlockDisplay> parts;
+        @SuppressWarnings("unused")
+        private final int createdTick;
+
+        private JumpRing(Location center, Vector forward, List<BlockDisplay> parts, int createdTick) {
+            this.center = center.clone();
+            this.forward = forward.clone().normalize();
+            this.parts = parts;
+            this.createdTick = createdTick;
         }
     }
 
