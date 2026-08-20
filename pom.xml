@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/xsd/maven-4.0.0.xsd https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.sagakenichi</groupId>
     <artifactId>freelife-marine-mobs</artifactId>
-    <version>1.9.1</version>
+    <version>1.10.0</version>
     <name>FreeLifeMarineMobs</name>
 
     <properties>
@@ -39,7 +39,7 @@
     </dependencies>
 
     <build>
-        <finalName>FreeLifeMarineMobs-1.9.1-Spigot-1.21.1</finalName>
+        <finalName>FreeLifeMarineMobs-1.10.0-Spigot-1.21.1</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
