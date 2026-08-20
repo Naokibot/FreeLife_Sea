@@ -41,6 +41,8 @@ final class MarineNaturalBehaviorController {
     private static final double STRONG_VERTICAL_MANEUVER = 0.075;
     private static final double BODY_MARGIN = 0.10;
     private static final double WAYPOINT_REACHED_DISTANCE = 2.5;
+    private static final int WAYPOINT_STAGNANT_TICKS = 50;
+    private static final double WAYPOINT_PROGRESS_EPSILON = 0.12;
     private static final double[] WATER_SEARCH_ANGLES = {
             0.0, 18.0, -18.0, 36.0, -36.0, 60.0, -60.0,
             90.0, -90.0, 135.0, -135.0, 180.0
@@ -116,6 +118,9 @@ final class MarineNaturalBehaviorController {
         Vector velocity = entity.getVelocity();
         double currentSpeed = Math.hypot(velocity.getX(), velocity.getZ());
 
+        if (state.isStagnating(location)) {
+            state.invalidateRoamTarget();
+        }
         if (state.needsRoamTarget(location, serverTick)) {
             state.setRoamTarget(chooseRoamTarget(location, mob.type()), mob.type(), serverTick);
         }
@@ -136,18 +141,6 @@ final class MarineNaturalBehaviorController {
                 preferred = forwardFromYaw(location.getYaw());
             } else {
                 preferred.normalize();
-            }
-        }
-
-        // If the primary controller has strongly redirected the animal (food pursuit,
-        // wall avoidance, etc.), respect that direction instead of fighting it.
-        Vector currentDirection = velocity.clone().setY(0.0);
-        if (currentDirection.lengthSquared() > DIRECTION_EPSILON) {
-            currentDirection.normalize();
-            if (currentSpeed > 0.18 && currentDirection.dot(preferred) < 0.35) {
-                preferred = currentDirection;
-                state.projectRoamTarget(location, currentDirection, mob.type(), serverTick);
-                target = state.roamTarget;
             }
         }
 
@@ -198,14 +191,19 @@ final class MarineNaturalBehaviorController {
         double maxDistance = MarineNaturalMotionProfile.maxRoamDistance(type);
         double maxDepthChange = MarineNaturalMotionProfile.maxRoamDepthChange(type);
 
+        Vector forward = forwardFromYaw(origin.getYaw());
         for (int attempt = 0; attempt < 24; attempt++) {
-            double angle = random.nextDouble(0.0, Math.PI * 2.0);
+            // Favor destinations generally ahead of the animal. Completely random 360-degree
+            // targets cause repeated U-turns in open water and can look like circling.
+            double turnDegrees = attempt < 18
+                    ? random.nextDouble(-100.0, 100.0)
+                    : random.nextDouble(-170.0, 170.0);
+            Vector travel = rotateY(forward, Math.toRadians(turnDegrees)).normalize();
             double distance = random.nextDouble(minDistance, Math.nextUp(maxDistance));
             double y = random.nextDouble(-maxDepthChange, Math.nextUp(maxDepthChange));
-            Location candidate = origin.clone().add(
-                    Math.cos(angle) * distance,
-                    y,
-                    Math.sin(angle) * distance);
+            Location candidate = origin.clone()
+                    .add(travel.multiply(distance))
+                    .add(0.0, y, 0.0);
             Location water = nearestWaterLayer(candidate);
             if (water != null) {
                 return water;
@@ -288,6 +286,7 @@ final class MarineNaturalBehaviorController {
         Location effect = boat.getLocation().clone().add(0.0, 0.35, 0.0);
         World world = boat.getWorld();
 
+        // A chest boat should not silently delete its cargo when the hull is destroyed.
         if (boat instanceof ChestBoat chestBoat) {
             for (ItemStack stack : chestBoat.getInventory().getContents()) {
                 if (stack == null || stack.getType().isAir()) {
@@ -374,6 +373,8 @@ final class MarineNaturalBehaviorController {
         private long nextPaceChangeTick;
         private Location roamTarget;
         private long roamTargetExpiresTick;
+        private double lastRoamDistance = Double.POSITIVE_INFINITY;
+        private int stagnantTicks;
 
         private SwimState(double phase, double pace, double targetPace, long nextPaceChangeTick) {
             this.phase = phase;
@@ -420,22 +421,32 @@ final class MarineNaturalBehaviorController {
             roamTargetExpiresTick = tick + ThreadLocalRandom.current().nextInt(
                     MarineNaturalMotionProfile.minRoamTargetTicks(type),
                     MarineNaturalMotionProfile.maxRoamTargetTicksExclusive(type));
+            lastRoamDistance = Double.POSITIVE_INFINITY;
+            stagnantTicks = 0;
         }
 
-        private void projectRoamTarget(Location location, Vector direction,
-                                       MarineMobType type, long tick) {
-            double distance = (MarineNaturalMotionProfile.minRoamDistance(type)
-                    + MarineNaturalMotionProfile.maxRoamDistance(type)) * 0.5;
-            Location projected = location.clone().add(direction.clone().multiply(distance));
-            Location water = nearestWaterLayer(projected);
-            if (water != null) {
-                setRoamTarget(water, type, tick);
+        private boolean isStagnating(Location location) {
+            if (roamTarget == null || roamTarget.getWorld() != location.getWorld()) {
+                lastRoamDistance = Double.POSITIVE_INFINITY;
+                stagnantTicks = 0;
+                return false;
             }
+            double distance = Math.sqrt(roamTarget.distanceSquared(location));
+            if (lastRoamDistance - distance >= WAYPOINT_PROGRESS_EPSILON) {
+                stagnantTicks = 0;
+            } else {
+                stagnantTicks++;
+            }
+            lastRoamDistance = distance;
+            return stagnantTicks >= WAYPOINT_STAGNANT_TICKS;
         }
 
         private void invalidateRoamTarget() {
             roamTarget = null;
             roamTargetExpiresTick = 0L;
+            lastRoamDistance = Double.POSITIVE_INFINITY;
+            stagnantTicks = 0;
         }
     }
+
 }
