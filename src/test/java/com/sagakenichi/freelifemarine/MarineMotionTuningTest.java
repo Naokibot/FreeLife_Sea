@@ -9,9 +9,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class MarineMotionTuningTest {
 
     @Test
-    void riddenOrcaSpeedIsExactlyFourTimesPreviousMaximum() {
-        assertEquals(56.0, MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_SECOND, 1.0E-9);
-        assertEquals(2.8, MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK, 1.0E-9);
+    void riddenOrcaSpeedIsSixtyPercentOfPreviousSpeed() {
+        assertEquals(33.6, MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_SECOND, 1.0E-9);
+        assertEquals(1.68, MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK, 1.0E-9);
+    }
+
+    @Test
+    void onlyForwardAlignedNativeInputEnablesRiddenMotion() {
+        assertTrue(MarineMotionTuning.hasForwardRiderIntent(0.10, 1.0));
+        assertTrue(MarineMotionTuning.hasForwardRiderIntent(0.10, 0.55));
+        assertFalse(MarineMotionTuning.hasForwardRiderIntent(0.10, 0.0));
+        assertFalse(MarineMotionTuning.hasForwardRiderIntent(0.10, -1.0));
+        assertFalse(MarineMotionTuning.hasForwardRiderIntent(0.005, 1.0));
     }
 
     @Test
