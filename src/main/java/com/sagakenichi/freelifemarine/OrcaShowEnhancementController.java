@@ -14,7 +14,6 @@ import org.bukkit.entity.Horse;
 import org.bukkit.entity.Slime;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -23,15 +22,11 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Adds the large show breach and landing splash without changing normal autonomous
- * or ridden movement. The existing show controller signals a jump with a uniquely
- * strong upward impulse; this final pass upgrades only that impulse.
+ * Tracks show-only breach landings and emits the deliberately oversized re-entry splash.
+ * Jump velocity is set at the source in MarineMobService so no later controller has to
+ * race the show scheduler to turn a small hop into a real breach.
  */
 final class OrcaShowEnhancementController {
-
-    private static final double SHOW_JUMP_TRIGGER_VERTICAL = 0.50;
-    private static final int TARGET_HEIGHT_ABOVE_SURFACE = 10;
-    private static final int MAX_SURFACE_SCAN_BLOCKS = 3;
 
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
@@ -68,27 +63,25 @@ final class OrcaShowEnhancementController {
                 UUID id = entity.getUniqueId();
                 seen.add(id);
                 JumpState state = jumpStates.computeIfAbsent(id, ignored -> new JumpState());
-                Location location = entity.getLocation();
-                boolean inWater = isWaterContact(location);
-                Vector velocity = entity.getVelocity();
+                boolean inWater = isWaterContact(entity.getLocation());
 
-                if (!state.active && inWater && velocity.getY() >= SHOW_JUMP_TRIGGER_VERTICAL) {
-                    int requiredRise = requiredRiseFromCurrentDepth(location);
-                    double vertical = MarineJumpProfile.initialVerticalVelocity(requiredRise);
-                    entity.setVelocity(velocity.clone().setY(vertical));
-                    entity.setRotation(location.getYaw(), -16.0F);
-                    state.active = true;
+                if (!mob.showJumpActive()) {
                     state.leftWater = false;
-                }
-
-                if (!state.active) {
                     continue;
                 }
+
                 if (!inWater) {
                     state.leftWater = true;
-                } else if (state.leftWater) {
-                    emitLandingSplash(world, location);
-                    state.active = false;
+                    if (entity.isOnGround()) {
+                        mobs.finishShowJump(mob);
+                        state.leftWater = false;
+                    }
+                    continue;
+                }
+
+                if (state.leftWater) {
+                    emitLandingSplash(world, entity.getLocation());
+                    mobs.finishShowJump(mob);
                     state.leftWater = false;
                 }
             }
@@ -96,31 +89,20 @@ final class OrcaShowEnhancementController {
         jumpStates.keySet().retainAll(seen);
     }
 
-    private static int requiredRiseFromCurrentDepth(Location location) {
-        int waterBlocksAbove = 0;
-        for (int offset = 1; offset <= MAX_SURFACE_SCAN_BLOCKS; offset++) {
-            if (!isWaterAt(location.clone().add(0.0, offset, 0.0))) {
-                break;
-            }
-            waterBlocksAbove = offset;
-        }
-        return Math.min(13, TARGET_HEIGHT_ABOVE_SURFACE + waterBlocksAbove);
-    }
-
     private static void emitLandingSplash(World world, Location location) {
         Location impact = location.clone().add(0.0, 0.45, 0.0);
 
-        // The wide layer reaches roughly eight blocks from the impact point.
-        world.spawnParticle(Particle.SPLASH, impact, 280,
-                8.0, 1.8, 8.0, 0.52);
-        // A tall center plume makes the re-entry look heavy rather than flat.
-        world.spawnParticle(Particle.SPLASH, impact, 160,
-                3.0, 4.2, 3.0, 0.68);
-        world.spawnParticle(Particle.CLOUD, impact, 56,
-                3.2, 2.8, 3.2, 0.18);
-        world.spawnParticle(Particle.BUBBLE, location, 96,
-                4.5, 1.1, 4.5, 0.20);
-        world.playSound(location, Sound.ENTITY_GENERIC_SPLASH, 2.0F, 0.62F);
+        // Wide sheet: visible out to roughly eight blocks from the impact point.
+        world.spawnParticle(Particle.SPLASH, impact, 320,
+                8.0, 1.8, 8.0, 0.58);
+        // Tall central plume gives the orca a heavy, aquarium-show style re-entry.
+        world.spawnParticle(Particle.SPLASH, impact, 190,
+                3.2, 4.8, 3.2, 0.76);
+        world.spawnParticle(Particle.CLOUD, impact, 64,
+                3.4, 3.1, 3.4, 0.20);
+        world.spawnParticle(Particle.BUBBLE, location, 110,
+                4.8, 1.3, 4.8, 0.22);
+        world.playSound(location, Sound.ENTITY_GENERIC_SPLASH, 2.0F, 0.58F);
     }
 
     private static boolean isWaterContact(Location location) {
@@ -140,7 +122,6 @@ final class OrcaShowEnhancementController {
     }
 
     private static final class JumpState {
-        private boolean active;
         private boolean leftWater;
     }
 }
