@@ -67,8 +67,8 @@ final class MarineNaturalMotionProfile {
 
     static double headingWeaveDegrees(MarineMobType type, long tick, double phase) {
         double amplitude = switch (type) {
-            case ORCA -> 0.18;
-            case SHARK -> 0.14;
+            case ORCA -> 4.5;
+            case SHARK -> 3.2;
             case CRAB -> 0.0;
         };
         double frequency = switch (type) {
