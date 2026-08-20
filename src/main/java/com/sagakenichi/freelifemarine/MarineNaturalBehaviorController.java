@@ -40,7 +40,7 @@ import java.util.concurrent.ThreadLocalRandom;
 final class MarineNaturalBehaviorController {
 
     private static final double DIRECTION_EPSILON = 1.0E-6;
-    private static final double STRONG_VERTICAL_MANEUVER = 0.16;
+    private static final double STRONG_VERTICAL_MANEUVER = 0.075;
     private static final double BODY_MARGIN = 0.10;
     private static final double[] WATER_SEARCH_ANGLES = {
             0.0, 18.0, -18.0, 36.0, -36.0, 60.0, -60.0,
@@ -124,9 +124,10 @@ final class MarineNaturalBehaviorController {
             baseDirection.normalize();
         }
 
-        double weave = MarineNaturalMotionProfile.headingWeaveDegrees(
-                mob.type(), serverTick, state.phase);
-        Vector preferred = rotateY(baseDirection, Math.toRadians(weave));
+        // Apply only the change in the slow weave curve. Applying the absolute curve
+        // every tick would accumulate rotation and eventually make the animal spin.
+        double weaveDelta = state.headingWeaveDelta(mob.type(), serverTick);
+        Vector preferred = rotateY(baseDirection, Math.toRadians(weaveDelta));
         Vector direction = findOpenWaterDirection(location, preferred, mob.type());
         if (direction == null) {
             return;
@@ -312,23 +313,28 @@ final class MarineNaturalBehaviorController {
         private double pace;
         private double targetPace;
         private long nextPaceChangeTick;
+        private double lastHeadingWeave;
 
-        private SwimState(double phase, double pace, double targetPace, long nextPaceChangeTick) {
+        private SwimState(double phase, double pace, double targetPace,
+                          long nextPaceChangeTick, double lastHeadingWeave) {
             this.phase = phase;
             this.pace = pace;
             this.targetPace = targetPace;
             this.nextPaceChangeTick = nextPaceChangeTick;
+            this.lastHeadingWeave = lastHeadingWeave;
         }
 
         private static SwimState create(MarineMobType type, long tick) {
             ThreadLocalRandom random = ThreadLocalRandom.current();
+            double phase = random.nextDouble(0.0, Math.PI * 2.0);
             double pace = random.nextDouble(
                     MarineNaturalMotionProfile.minPace(type),
                     Math.nextUp(MarineNaturalMotionProfile.maxPace(type)));
             long next = tick + random.nextInt(
                     MarineNaturalMotionProfile.minPaceHoldTicks(type),
                     MarineNaturalMotionProfile.maxPaceHoldTicksExclusive(type));
-            return new SwimState(random.nextDouble(0.0, Math.PI * 2.0), pace, pace, next);
+            double weave = MarineNaturalMotionProfile.headingWeaveDegrees(type, tick, phase);
+            return new SwimState(phase, pace, pace, next, weave);
         }
 
         private void update(MarineMobType type, long tick) {
@@ -342,6 +348,13 @@ final class MarineNaturalBehaviorController {
                         MarineNaturalMotionProfile.maxPaceHoldTicksExclusive(type));
             }
             pace += (targetPace - pace) * 0.035;
+        }
+
+        private double headingWeaveDelta(MarineMobType type, long tick) {
+            double current = MarineNaturalMotionProfile.headingWeaveDegrees(type, tick, phase);
+            double delta = current - lastHeadingWeave;
+            lastHeadingWeave = current;
+            return delta;
         }
     }
 }
