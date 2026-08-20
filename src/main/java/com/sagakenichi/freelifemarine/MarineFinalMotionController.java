@@ -23,16 +23,15 @@ import java.util.UUID;
 
 /**
  * Final per-tick motion pass for behavior that must win after the normal marine AI.
- *
- * <p>Airborne movement is integrated manually. This intentionally does not depend
- * on the invisible Horse/Slime carrier accepting Bukkit velocity updates, because
- * live servers have shown cases where the carrier keeps a non-zero velocity yet its
- * position remains suspended. Water and grounded movement still use the normal AI.</p>
+ * Airborne movement is integrated manually so carrier physics cannot leave an animal
+ * suspended. Ridden orcas follow the pilot's three-dimensional gaze while in water.
  */
 final class MarineFinalMotionController {
 
     private static final double DIRECTION_EPSILON = 1.0E-6;
     private static final double SUPPORT_PROBE = 0.10;
+    private static final double DEEP_RIDER_MAX_VERTICAL = 0.85;
+    private static final double SHALLOW_RIDER_MAX_VERTICAL = 0.12;
 
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
@@ -98,9 +97,6 @@ final class MarineFinalMotionController {
     private void integrateAirborne(Entity entity) {
         UUID id = entity.getUniqueId();
         AirState state = airborne.computeIfAbsent(id, ignored -> AirState.from(entity.getVelocity()));
-
-        // The carrier's own gravity/velocity integration is deliberately disabled only
-        // while airborne. We apply gravity ourselves and move the entity by coordinates.
         entity.setGravity(false);
 
         state.vertical = MarineAirKinematics.nextVerticalVelocity(state.vertical);
@@ -121,13 +117,13 @@ final class MarineFinalMotionController {
         if (result.hitSolid) {
             entity.teleport(result.location);
             entity.setGravity(true);
-            entity.setVelocity(new Vector(0.0, 0.0, 0.0));
+            entity.setVelocity(new Vector());
             airborne.remove(id);
             return;
         }
 
         entity.teleport(result.location);
-        entity.setVelocity(new Vector(0.0, 0.0, 0.0));
+        entity.setVelocity(new Vector());
         state.horizontalX = MarineAirKinematics.nextHorizontalVelocity(state.horizontalX);
         state.horizontalZ = MarineAirKinematics.nextHorizontalVelocity(state.horizontalZ);
     }
@@ -156,22 +152,40 @@ final class MarineFinalMotionController {
         horse.setAI(false);
         horse.setGravity(true);
 
-        Vector forward = pilot.getEyeLocation().getDirection().setY(0.0);
-        if (forward.lengthSquared() < DIRECTION_EPSILON) {
-            forward = forwardFromYaw(pilot.getLocation().getYaw());
+        Vector look = pilot.getEyeLocation().getDirection();
+        if (look.lengthSquared() < DIRECTION_EPSILON) {
+            look = forwardFromYaw(pilot.getLocation().getYaw());
         } else {
-            forward.normalize();
+            look.normalize();
         }
 
         Location location = horse.getLocation();
-        Vector current = horse.getVelocity();
-        double vertical = shallowPool(location)
-                ? clamp(current.getY(), -0.045, 0.045)
-                : clamp(pilot.getEyeLocation().getDirection().getY() * 0.28, -0.22, 0.22);
+        double speed = MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK;
+        boolean shallow = shallowPool(location);
+        double maxVertical = shallow ? SHALLOW_RIDER_MAX_VERTICAL : DEEP_RIDER_MAX_VERTICAL;
+        double vertical = clamp(look.getY() * speed, -maxVertical, maxVertical);
 
-        Vector target = forward.multiply(MarineMotionTuning.ORCA_RIDDEN_BLOCKS_PER_TICK).setY(vertical);
+        if (shallow) {
+            if (vertical > 0.0 && !isWaterAt(location.clone().add(0.0, 0.85, 0.0))) {
+                vertical = Math.min(vertical, 0.035);
+            }
+            if (vertical < 0.0 && !isWaterAt(location.clone().add(0.0, -0.85, 0.0))) {
+                vertical = Math.max(vertical, -0.025);
+            }
+        }
+
+        Vector horizontal = look.clone().setY(0.0);
+        if (horizontal.lengthSquared() < DIRECTION_EPSILON) {
+            horizontal = forwardFromYaw(pilot.getLocation().getYaw());
+        } else {
+            horizontal.normalize();
+        }
+        double horizontalSpeed = Math.sqrt(Math.max(0.0, speed * speed - vertical * vertical));
+        Vector target = horizontal.multiply(horizontalSpeed).setY(vertical);
+
         horse.setVelocity(target);
-        horse.setRotation(pilot.getLocation().getYaw(), 0.0F);
+        horse.setRotation(pilot.getLocation().getYaw(),
+                (float) clamp(pilot.getLocation().getPitch(), -70.0, 70.0));
     }
 
     private static Player firstPlayerPassenger(Entity entity) {
