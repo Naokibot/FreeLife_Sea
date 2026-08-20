@@ -1,10 +1,8 @@
 package com.sagakenichi.freelifemarine;
 
 /**
- * Small, species-specific variations layered on top of the main autonomous controller.
- * The normal AI still decides where the animal wants to go; this profile keeps that
- * movement continuous while adding slow pace, heading, and depth changes so motion does
- * not look like a vehicle holding one exact throttle setting.
+ * Species-specific pacing and roaming ranges for autonomous marine animals.
+ * Long-lived roaming targets keep movement exploratory instead of turning in a local circle.
  */
 final class MarineNaturalMotionProfile {
 
@@ -65,24 +63,10 @@ final class MarineNaturalMotionProfile {
         return 1.0 + Math.sin(tick * frequency + phase) * amplitude;
     }
 
-    static double headingWeaveDegrees(MarineMobType type, long tick, double phase) {
-        double amplitude = switch (type) {
-            case ORCA -> 4.5;
-            case SHARK -> 3.2;
-            case CRAB -> 0.0;
-        };
-        double frequency = switch (type) {
-            case ORCA -> 0.025;
-            case SHARK -> 0.021;
-            case CRAB -> 0.0;
-        };
-        return Math.sin(tick * frequency + phase * 0.73) * amplitude;
-    }
-
     static double verticalWave(MarineMobType type, long tick, double phase) {
         double amplitude = switch (type) {
-            case ORCA -> 0.018;
-            case SHARK -> 0.012;
+            case ORCA -> 0.014;
+            case SHARK -> 0.010;
             case CRAB -> 0.0;
         };
         double frequency = switch (type) {
@@ -91,6 +75,46 @@ final class MarineNaturalMotionProfile {
             case CRAB -> 0.0;
         };
         return Math.sin(tick * frequency + phase * 1.17) * amplitude;
+    }
+
+    static double minRoamDistance(MarineMobType type) {
+        return switch (type) {
+            case ORCA -> 12.0;
+            case SHARK -> 9.0;
+            case CRAB -> 0.0;
+        };
+    }
+
+    static double maxRoamDistance(MarineMobType type) {
+        return switch (type) {
+            case ORCA -> 30.0;
+            case SHARK -> 24.0;
+            case CRAB -> 0.0;
+        };
+    }
+
+    static double maxRoamDepthChange(MarineMobType type) {
+        return switch (type) {
+            case ORCA -> 3.0;
+            case SHARK -> 2.2;
+            case CRAB -> 0.0;
+        };
+    }
+
+    static int minRoamTargetTicks(MarineMobType type) {
+        return switch (type) {
+            case ORCA -> 100;
+            case SHARK -> 120;
+            case CRAB -> Integer.MAX_VALUE;
+        };
+    }
+
+    static int maxRoamTargetTicksExclusive(MarineMobType type) {
+        return switch (type) {
+            case ORCA -> 261;
+            case SHARK -> 301;
+            case CRAB -> Integer.MAX_VALUE;
+        };
     }
 
     static double collisionScanRadius(MarineMobType type) {
