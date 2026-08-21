@@ -22,9 +22,7 @@ import java.util.UUID;
 
 /**
  * Converts a fast, upward rider-controlled approach to the surface into a real breach.
- * Normal autonomous swimming never uses this controller: an orca must have a player in
- * the primary saddle, must actually have moved forward quickly, and the rider must aim
- * clearly upward while the body is close to the surface.
+ * Autonomous orcas are explicitly prevented from producing an upward breach impulse.
  */
 final class RiddenOrcaBreachController {
 
@@ -35,6 +33,7 @@ final class RiddenOrcaBreachController {
     private static final double MIN_VERTICAL_LAUNCH = 0.58;
     private static final double MAX_VERTICAL_LAUNCH = 1.45;
     private static final double MAX_HORIZONTAL_LAUNCH = 1.85;
+    private static final double AUTONOMOUS_BREACH_VERTICAL_THRESHOLD = 0.18;
 
     private final JavaPlugin plugin;
     private final MarineMobService mobs;
@@ -79,7 +78,11 @@ final class RiddenOrcaBreachController {
                 Location previous = previousLocations.put(id, current.clone());
                 Player pilot = firstPlayerPassenger(horse);
 
-                if (pilot == null || !isWaterContact(current)) {
+                if (pilot == null) {
+                    suppressAutonomousBreach(horse, current);
+                    continue;
+                }
+                if (!isWaterContact(current)) {
                     continue;
                 }
                 if (serverTick < cooldownUntil.getOrDefault(id, 0L)) {
@@ -147,6 +150,18 @@ final class RiddenOrcaBreachController {
         cooldownUntil.keySet().retainAll(seen);
     }
 
+    private static void suppressAutonomousBreach(Horse horse, Location location) {
+        if (!isWaterContact(location) || !isNearSurface(location)) {
+            return;
+        }
+        Vector velocity = horse.getVelocity();
+        if (velocity.getY() <= AUTONOMOUS_BREACH_VERTICAL_THRESHOLD) {
+            return;
+        }
+        // Keep horizontal roaming intact while preventing a scheduler-generated breach.
+        horse.setVelocity(new Vector(velocity.getX(), 0.035, velocity.getZ()));
+    }
+
     private static Player firstPlayerPassenger(Entity entity) {
         for (Entity passenger : entity.getPassengers()) {
             if (passenger instanceof Player player) {
@@ -165,10 +180,9 @@ final class RiddenOrcaBreachController {
     }
 
     private static Location firstAirAbove(Location location) {
-        Location probe = location.clone();
         for (int step = 0; step <= 10; step++) {
             double dy = step * 0.20;
-            probe = location.clone().add(0.0, dy, 0.0);
+            Location probe = location.clone().add(0.0, dy, 0.0);
             if (!isWaterAt(probe) && !isWaterAt(probe.clone().add(0.0, 0.25, 0.0))) {
                 return probe.add(0.0, 0.05, 0.0);
             }
