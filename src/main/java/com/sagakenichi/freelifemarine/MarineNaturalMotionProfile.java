@@ -2,7 +2,8 @@ package com.sagakenichi.freelifemarine;
 
 /**
  * Species-specific pacing and roaming ranges for autonomous marine animals.
- * Long-lived roaming targets keep movement exploratory instead of turning in a local circle.
+ * Aquatic animals keep one destination for at most seven seconds, but reaching the
+ * destination or getting blocked causes an immediate replacement target.
  */
 final class MarineNaturalMotionProfile {
 
@@ -103,16 +104,14 @@ final class MarineNaturalMotionProfile {
 
     static int minRoamTargetTicks(MarineMobType type) {
         return switch (type) {
-            case ORCA -> 100;
-            case SHARK -> 120;
+            case ORCA, SHARK -> 140;
             case CRAB -> Integer.MAX_VALUE;
         };
     }
 
     static int maxRoamTargetTicksExclusive(MarineMobType type) {
         return switch (type) {
-            case ORCA -> 261;
-            case SHARK -> 301;
+            case ORCA, SHARK -> 141;
             case CRAB -> Integer.MAX_VALUE;
         };
     }
