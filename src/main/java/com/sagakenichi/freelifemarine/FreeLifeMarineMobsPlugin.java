@@ -9,6 +9,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
     private OrcaShowManager shows;
     private MarineFinalMotionController finalMotion;
     private MarineNaturalBehaviorController naturalBehavior;
+    private RiddenOrcaBreachController riddenBreach;
     private OrcaShowEnhancementController showEnhancement;
 
     @Override
@@ -19,6 +20,7 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         shows = new OrcaShowManager(this, mobs);
         finalMotion = new MarineFinalMotionController(this, mobs);
         naturalBehavior = new MarineNaturalBehaviorController(this, mobs);
+        riddenBreach = new RiddenOrcaBreachController(this, mobs);
         showEnhancement = new OrcaShowEnhancementController(this, mobs);
         MarineCommand command = new MarineCommand(mobs, food, shows);
         PluginCommand marine = getCommand("marine");
@@ -32,14 +34,21 @@ public final class FreeLifeMarineMobsPlugin extends JavaPlugin {
         shows.start();
         finalMotion.start();
         naturalBehavior.start();
+        // Run after normal ridden steering. This lets the breach detector measure the
+        // actual movement produced by W and turn only a fast upward surface approach
+        // into an airborne jump.
+        riddenBreach.start();
         showEnhancement.start();
-        getLogger().info("FreeLifeMarineMobs 1.10.0 enabled: continuous natural autonomy, boat-impact breaking, high breaches, deterministic air gravity, and 3D gaze riding are active.");
+        getLogger().info("FreeLifeMarineMobs 1.10.0 enabled: seven-second roaming targets, rider-driven surface breaches, boat-impact breaking, deterministic air gravity, and configurable 1-50 blocks/s orca riding are active.");
     }
 
     @Override
     public void onDisable() {
         if (showEnhancement != null) {
             showEnhancement.shutdown();
+        }
+        if (riddenBreach != null) {
+            riddenBreach.shutdown();
         }
         if (naturalBehavior != null) {
             naturalBehavior.shutdown();
