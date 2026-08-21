@@ -3,13 +3,13 @@ package com.sagakenichi.freelifemarine;
 final class MarineMotionTuning {
 
     static final double PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND = 33.6;
-    static final double ORCA_RIDDEN_SPEED_MULTIPLIER = 2.50;
+    static final double ORCA_RIDDEN_SPEED_MULTIPLIER = 50.0 / PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND;
     static final double ORCA_RIDDEN_BLOCKS_PER_SECOND =
             PREVIOUS_ORCA_RIDDEN_BLOCKS_PER_SECOND * ORCA_RIDDEN_SPEED_MULTIPLIER;
     static final double ORCA_RIDDEN_BLOCKS_PER_TICK = ORCA_RIDDEN_BLOCKS_PER_SECOND / 20.0;
 
-    static final double MIN_ORCA_RIDDEN_BLOCKS_PER_SECOND = 2.0;
-    static final double MAX_ORCA_RIDDEN_BLOCKS_PER_SECOND = 120.0;
+    static final double MIN_ORCA_RIDDEN_BLOCKS_PER_SECOND = 1.0;
+    static final double MAX_ORCA_RIDDEN_BLOCKS_PER_SECOND = 50.0;
     static final int MIN_ORCA_JUMP_HEIGHT = 3;
     static final int MAX_ORCA_JUMP_HEIGHT = 13;
     static final int DEFAULT_ORCA_JUMP_HEIGHT = 10;
