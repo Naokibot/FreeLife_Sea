@@ -1,9 +1,9 @@
 package com.sagakenichi.freelifemarine;
 
 /**
- * Species-specific autonomous activity ranges. Values are intentionally more active
- * than the earlier profile so animals spend less time coasting slowly or holding a
- * single heading for long periods.
+ * Species-specific autonomous activity ranges. Orcas no longer start autonomous
+ * breach jumps; jumping is reserved for rider-driven surface breaches and scripted
+ * show/call behavior.
  */
 final class MarineActivityProfile {
 
@@ -84,7 +84,9 @@ final class MarineActivityProfile {
 
     static int minJumpDelayTicks(MarineMobType type) {
         return switch (type) {
-            case ORCA -> 100;
+            // Effectively disabled without using Integer.MAX_VALUE, because the legacy
+            // autonomous scheduler calls nextInt(min, maxExclusive).
+            case ORCA -> 2_000_000_000;
             case SHARK -> 200;
             case CRAB -> Integer.MAX_VALUE;
         };
@@ -92,7 +94,7 @@ final class MarineActivityProfile {
 
     static int maxJumpDelayTicksExclusive(MarineMobType type) {
         return switch (type) {
-            case ORCA -> 321;
+            case ORCA -> 2_000_000_001;
             case SHARK -> 601;
             case CRAB -> Integer.MAX_VALUE;
         };
